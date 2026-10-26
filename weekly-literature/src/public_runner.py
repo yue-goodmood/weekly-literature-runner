@@ -8,7 +8,8 @@ import tempfile
 import urllib.error
 from zoneinfo import ZoneInfo
 
-from pipeline import ROOT, Store, PubMed, TRIAGE_POLICY, digest, request, run_etl
+from pipeline import (ROOT, Store, PubMed, TRIAGE_POLICY, digest, request, run_etl,
+                      work_budget, WorkBudgetReached, UpstreamDeferred)
 from publish import publish
 from retune_queue import retune
 from supplements import EuropePMC, Arxiv
@@ -79,11 +80,17 @@ def execute(mode, store=None, today=None):
     if mode in ('etl', 'scheduled'):
         config = json.loads((ROOT/'config/topics.json').read_text())
         date, config = etl_target(store, today, config)
-        try:
-            run_etl(store, PubMed(), config, date,
-                    {'Europe PMC': EuropePMC(request), 'arXiv': Arxiv(request)})
-        except Exception as exc:
-            raise PhaseError('ETL', exc) from None
+        existing = store.sql('SELECT status FROM wl_runs WHERE run_key=?',
+                             ('weekly-literature:'+date+':Asia/Shanghai',))
+        if existing and existing[0]['status'] != 'ETL':
+            if mode == 'etl':
+                return 'NO_PENDING_ETL'
+        else:
+            try:
+                run_etl(store, PubMed(), config, date,
+                        {'Europe PMC': EuropePMC(request), 'arXiv': Arxiv(request)})
+            except Exception as exc:
+                raise PhaseError('ETL', exc) from None
     if mode in ('publish', 'scheduled'):
         rows = store.sql("""
             SELECT r.run_key,r.audit,
@@ -105,16 +112,22 @@ def safe_main(mode, worker=execute):
     # Never tee, upload, or preserve private logs as CI artifacts. A TemporaryFile
     # bounds memory and is automatically unlinked, including on ordinary errors.
     try:
-        with tempfile.TemporaryFile(mode='w+', encoding='utf-8') as private_log:
+        with work_budget(int(os.environ.get('WORK_BUDGET_SECONDS', '600'))), tempfile.TemporaryFile(mode='w+', encoding='utf-8') as private_log:
             with contextlib.redirect_stdout(private_log), contextlib.redirect_stderr(private_log):
                 status = worker(mode)
         allowed = {'DISABLED', 'READY', 'RETRIAGED', 'ETL_CHECKPOINTED',
-                   'PUBLICATION_VERIFIED', 'AWAITING_REVIEW', 'NO_PENDING_PUBLICATION'}
+                   'PUBLICATION_VERIFIED', 'AWAITING_REVIEW', 'NO_PENDING_PUBLICATION',
+                   'NO_PENDING_ETL'}
         if status not in allowed:
             raise ConfigurationError()
         print('weekly-literature: '+status)
         return 0
     except BaseException as exc:
+        cause = exc.cause if isinstance(exc, PhaseError) else exc
+        if isinstance(cause, (WorkBudgetReached, UpstreamDeferred)):
+            print('weekly-literature: '+('PAUSED_WORK_BUDGET' if isinstance(cause, WorkBudgetReached)
+                                          else 'PAUSED_UPSTREAM_COOLDOWN'))
+            return 0  # A checkpointed pause is not completion and needs no rerun storm.
         # Never stringify an exception in public CI: it can contain URLs,
         # upstream payloads, private page IDs, SQL parameters, or bearer tokens.
         if isinstance(exc, KeyboardInterrupt):
