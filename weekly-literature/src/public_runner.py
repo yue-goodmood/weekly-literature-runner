@@ -5,9 +5,10 @@ import datetime as dt
 import json
 import os
 import tempfile
+import urllib.error
 from zoneinfo import ZoneInfo
 
-from pipeline import ROOT, Store, PubMed, TRIAGE_POLICY, request, run_etl
+from pipeline import ROOT, Store, PubMed, TRIAGE_POLICY, digest, request, run_etl
 from publish import publish
 from retune_queue import retune
 from supplements import EuropePMC, Arxiv
@@ -20,6 +21,26 @@ REQUIRED = ('CLOUDFLARE_API_TOKEN', 'CLOUDFLARE_ACCOUNT_ID', 'LITERATURE_D1_ID',
 class ConfigurationError(Exception):
     pass
 
+class FrozenConfigError(Exception):
+    pass
+
+class PhaseError(Exception):
+    def __init__(self, phase, cause):
+        self.phase, self.cause = phase, cause
+
+
+def etl_target(store, today, config):
+    unfinished = store.sql("SELECT run_key,config_hash FROM wl_runs WHERE status='ETL' ORDER BY run_key LIMIT 1")
+    if not unfinished:
+        return (today-dt.timedelta(days=today.weekday())).isoformat(), config
+    run = unfinished[0]
+    cached = store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit=?',
+                       (run['run_key'], 'etl:frozen-config:v1'))
+    frozen = json.loads(cached[0]['payload']) if cached else config
+    if digest(frozen) != run['config_hash']:
+        raise FrozenConfigError()
+    return run['run_key'].split(':')[1], frozen
+
 
 def strict(audit):
     return (audit.get('review_policy') == 'clinical-signal-unlimited-v1' and
@@ -29,29 +50,40 @@ def strict(audit):
 def execute(mode, store=None, today=None):
     if os.environ.get('ENABLE_PRODUCTION') != 'true':
         return 'DISABLED'
-    if any(not os.environ.get(key, '').strip() for key in REQUIRED):
+    needed = REQUIRED if mode in ('readiness', 'publish', 'scheduled') else REQUIRED[:3]
+    if any(not os.environ.get(key, '').strip() for key in needed):
         raise ConfigurationError()
     store = store if store is not None else Store()
     today = today or dt.datetime.now(ZoneInfo('Asia/Shanghai')).date()
     if mode == 'readiness':
         # Read-only; never migrate or mutate D1, and never emit selected content.
-        store.sql('SELECT status FROM wl_runs ORDER BY run_key LIMIT 1')
+        try:
+            store.sql('SELECT status FROM wl_runs ORDER BY run_key LIMIT 1')
+        except Exception as exc:
+            raise PhaseError('D1', exc) from None
         headers = {'Authorization': 'Bearer '+os.environ['NOTION_TOKEN'],
                    'Notion-Version': '2025-09-03'}
-        for name in ('NOTION_DATA_SOURCE_ID', 'NOTION_ARTICLE_DATA_SOURCE_ID'):
-            request('https://api.notion.com/v1/data_sources/'+os.environ[name], headers=headers)
+        try:
+            for name in ('NOTION_DATA_SOURCE_ID', 'NOTION_ARTICLE_DATA_SOURCE_ID'):
+                request('https://api.notion.com/v1/data_sources/'+os.environ[name], headers=headers)
+        except Exception as exc:
+            raise PhaseError('NOTION', exc) from None
         return 'READY'
     store.migrate()
     # Repair oldest legacy queue BEFORE spending quota on a new retrieval run.
-    for row in store.sql("SELECT run_key,audit FROM wl_runs WHERE status='READY' ORDER BY run_key"):
+    for row in (store.sql("SELECT run_key,audit FROM wl_runs WHERE status='READY' ORDER BY run_key")
+                if mode in ('etl','scheduled') else []):
         if not strict(json.loads(row['audit'])):
             retune(store, row['run_key'])
             return 'RETRIAGED'  # One bounded recovery task; no new ETL this pass.
-    if mode in ('etl', 'scheduled') and (mode == 'etl' or today.weekday() in (0, 1)):
+    if mode in ('etl', 'scheduled'):
         config = json.loads((ROOT/'config/topics.json').read_text())
-        date = (today-dt.timedelta(days=today.weekday())).isoformat()
-        run_etl(store, PubMed(), config, date,
-                {'Europe PMC': EuropePMC(request), 'arXiv': Arxiv(request)})
+        date, config = etl_target(store, today, config)
+        try:
+            run_etl(store, PubMed(), config, date,
+                    {'Europe PMC': EuropePMC(request), 'arXiv': Arxiv(request)})
+        except Exception as exc:
+            raise PhaseError('ETL', exc) from None
     if mode in ('publish', 'scheduled'):
         rows = store.sql("""
             SELECT r.run_key,r.audit,
@@ -89,8 +121,17 @@ def safe_main(mode, worker=execute):
             label = 'INTERRUPTED'
         elif isinstance(exc, ConfigurationError):
             label = 'CONFIGURATION_REQUIRED'
+        elif isinstance(exc, FrozenConfigError):
+            label = 'FROZEN_CONFIG_REQUIRED'
         elif isinstance(exc, RuntimeError) and exc.args == ('D1_DAILY_QUOTA_EXCEEDED',):
             label = 'D1_DAILY_QUOTA_EXCEEDED'
+        elif isinstance(exc, PhaseError):
+            if isinstance(exc.cause, RuntimeError) and exc.cause.args == ('D1_DAILY_QUOTA_EXCEEDED',):
+                label = 'D1_DAILY_QUOTA_EXCEEDED'
+            elif isinstance(exc.cause, urllib.error.HTTPError):
+                label = exc.phase+'_HTTP_'+str(exc.cause.code)
+            else:
+                label = exc.phase+'_FAILED_PRIVATE_DETAILS_SUPPRESSED'
         else:
             label = 'STOPPED_PRIVATE_DETAILS_SUPPRESSED'
         print('weekly-literature: '+label)

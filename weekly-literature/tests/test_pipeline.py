@@ -2,6 +2,8 @@ import importlib.util
 import json
 from pathlib import Path
 import tempfile
+import io
+import urllib.error
 import unittest
 from unittest.mock import patch
 
@@ -71,6 +73,51 @@ class PipelineTest(unittest.TestCase):
             p.run_etl(self.store,self.source,self.config,'2026-09-22')
         self.config['version']='new'
         with self.assertRaises(ValueError): p.run_etl(self.store,self.source,self.config,'2026-09-22')
+
+    def test_frozen_config_is_saved_before_upstream_failure(self):
+        self.source.fail=True
+        with self.assertRaises(RuntimeError):
+            p.run_etl(self.store,self.source,self.config,'2026-09-22')
+        rows=self.store.sql('SELECT payload FROM wl_checkpoints WHERE unit=?',('etl:frozen-config:v1',))
+        self.assertEqual(json.loads(rows[0]['payload']),self.config)
+
+    def test_d1_http_daily_quota_never_retries(self):
+        url='https://api.cloudflare.com/client/v4/accounts/example/d1/database/example/query'
+        error=urllib.error.HTTPError(url,429,'quota',{},io.BytesIO(b'{"errors":[{"message":"free tier daily row read limit exceeded"}]}'))
+        with patch.object(p.urllib.request,'urlopen',side_effect=error) as send, patch.object(p.time,'sleep') as sleep:
+            with self.assertRaisesRegex(RuntimeError,'D1_DAILY_QUOTA_EXCEEDED'):
+                p.request(url)
+            self.assertEqual(send.call_count,1)
+            sleep.assert_not_called()
+
+    def test_daily_quota_latches_across_reads_and_batches(self):
+        with patch.dict(p.os.environ,{'CLOUDFLARE_ACCOUNT_ID':'example','LITERATURE_D1_ID':'example','CLOUDFLARE_API_TOKEN':'test'}):
+            store=p.Store()
+        failure=json.dumps({'success':False,'errors':[{'message':'daily row read limit exceeded'}]}).encode()
+        with patch.object(p,'request',return_value=failure) as send:
+            self.assertRaises(RuntimeError,store.sql,'SELECT 1')
+            self.assertRaises(RuntimeError,store.sql,'SELECT 2')
+            self.assertRaises(RuntimeError,store.batch,[('SELECT 3',())])
+            self.assertEqual(send.call_count,1)
+
+    def test_supplement_daily_quota_stops_without_audit_write(self):
+        from unittest.mock import Mock
+        fake=Mock()
+        fake.sql.return_value=[{'start':None}]
+        config={'supplementary_sources':{'Europe PMC':{'enabled':True,'queries':{},'max_pages':None},'arXiv':{'enabled':True,'queries':{},'max_pages':None}}}
+        with patch('supplements.harvest',side_effect=RuntimeError('D1_DAILY_QUOTA_EXCEEDED')) as harvest:
+            self.assertRaises(RuntimeError,p.run_supplements,fake,'run',config,
+                {'window_start':'2026-10-01','window_end':'2026-10-18'}, {'Europe PMC':object(),'arXiv':object()})
+            self.assertEqual(harvest.call_count,1)
+            self.assertEqual(fake.sql.call_count,1)  # Initial gap read only.
+
+    def test_retry_after_date_does_not_break_transient_retry(self):
+        from unittest.mock import MagicMock
+        error=urllib.error.HTTPError('https://example.org',503,'busy',{'Retry-After':'Wed, 21 Oct 2026 07:28:00 GMT'},io.BytesIO())
+        response=MagicMock()
+        response.__enter__.return_value.read.return_value=b'ok'
+        with patch.object(p.urllib.request,'urlopen',side_effect=[error,response]), patch.object(p.time,'sleep'):
+            self.assertEqual(p.request('https://example.org'),b'ok')
 
     def test_materialized_run_keeps_frozen_hash_after_policy_release(self):
         p.run_etl(self.store,self.source,self.config,'2026-09-22')

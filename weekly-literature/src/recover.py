@@ -96,6 +96,8 @@ def repair_supplements(store, run):
             store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)', (run, namespace_unit, json.dumps(namespace)))
             result = execute(namespace)
     except (ValueError, RuntimeError, OSError) as exc:
+        if isinstance(exc, RuntimeError) and exc.args == ('D1_DAILY_QUOTA_EXCEEDED',):
+            raise
         result = dict(status='PARTIAL', window_start=start, window_end=end,
                       error=type(exc).__name__+': '+str(exc)[:500])
     audit['supplementary_sources']['Europe PMC'] = result
