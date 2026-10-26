@@ -1,0 +1,42 @@
+{
+  "version": "strict-clinical-v3",
+  "lookback_days": 14,
+  "triage_policy": "clinical-signal-v1",
+  "max_candidates": null,
+  "max_deep_analysis": 10,
+  "topics": [
+    "colorectal",
+    "medical_ai"
+  ],
+  "queries": {
+    "colorectal": "(Colorectal Neoplasms[MeSH Terms] OR colorectal[Title/Abstract] OR rectal[Title/Abstract] OR colectomy[Title/Abstract] OR proctectomy[Title/Abstract] OR \"colon cancer\"[Title/Abstract] OR \"colon surgery\"[Title/Abstract] OR \"anterior resection\"[Title/Abstract])",
+    "medical_ai": "((\"artificial intelligence\"[Title] OR \"machine learning\"[Title] OR \"deep learning\"[Title] OR radiomics[Title] OR \"large language model\"[Title/Abstract] OR \"large language models\"[Title/Abstract] OR \"generative AI\"[Title/Abstract] OR \"AI agent\"[Title/Abstract] OR \"foundation model\"[Title/Abstract]) AND (clinical[Title/Abstract] OR medical[Title/Abstract] OR patient[Title/Abstract] OR healthcare[Title/Abstract] OR surgery[Title/Abstract] OR diagnosis[Title/Abstract]))"
+  },
+  "supplementary_sources": {
+    "Europe PMC": {
+      "enabled": true,
+      "max_pages": null,
+      "queries": {
+        "colorectal": "TITLE_ABS:(colorectal OR rectal OR colectomy OR \"colon cancer\")",
+        "medical_ai": "TITLE_ABS:(\"large language model\" OR \"artificial intelligence\" OR \"machine learning\" OR \"deep learning\" OR \"AI agent\") AND TITLE_ABS:(clinical OR medical OR patient OR healthcare)"
+      }
+    },
+    "arXiv": {
+      "enabled": true,
+      "max_pages": null,
+      "queries": {
+        "medical_ai": "(all:clinical OR all:medical OR all:healthcare OR all:colorectal) AND (all:\"large language model\" OR all:\"machine learning\" OR all:\"deep learning\" OR all:\"AI agent\")"
+      }
+    },
+    "Crossref": {
+      "enabled": false
+    },
+    "Chinese journals": {
+      "enabled": false
+    }
+  }
+}
+
+
+
+

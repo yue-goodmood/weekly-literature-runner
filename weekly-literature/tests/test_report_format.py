@@ -1,0 +1,177 @@
+"""Layout and retry-safety regression tests; no external credentials required."""
+import json
+import sys
+from pathlib import Path
+import unittest
+from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+import pipeline
+import report_format as rf
+
+
+def row(key, title, decision="include", priority="medium"):
+    record = {"title": title, "pmid": key.split(":")[1] if key.startswith("PMID:") else "",
+              "doi": "10.1234/" + key.split(":")[-1],
+              "journal": "Example journal", "publication_date": "2026-10-10"}
+    analysis = {"decision": decision, "summary": "【基于摘要】主要结果：有待进一步外部验证。不能推导因果。",
+                "popscience": "人群与证据边界已标明。", "popscience_priority": priority}
+    return {"evidence_key": key, "article": json.dumps(record), "payload": json.dumps(analysis)}
+
+
+class LayoutTest(unittest.TestCase):
+    def setUp(self):
+        self.state = {"run_key": "weekly-literature:2026-10-12:Asia/Shanghai",
+                      "window_start": "2026-09-29", "window_end": "2026-10-11",
+                      "audit": json.dumps({"raw_hits": 5000, "unique_pmids": 2200,
+                                           "selected": 5, "eligible": 900,
+                                           "deferred": 895, "supplementary_sources": {
+                                               "Europe PMC": {"status": "PARTIAL"},
+                                               "arXiv": {"status": "COMPLETE_FOR_QUERY"},
+                                               "Chinese journals": {"status": "NOT_ATTEMPTED"}}})}
+
+    def test_sections_links_and_no_loss(self):
+        rows = [row("PMID:111", "Rectal cancer clinical practice guideline"),
+                row("PMID:222", "Neoadjuvant organ preservation in rectal cancer"),
+                row("PMID:333", "Machine learning for colorectal diagnosis", priority="high"),
+                row("PMID:444", "Unrelated work", decision="exclude"),
+                row("PMID:555", "Extracellular vesicle effects in tumor biology")]
+        blocks, total = rf.build_report(self.state, rows)
+        self.assertEqual(total, 4)
+        kinds = [b["type"] for b in blocks]
+        self.assertEqual(kinds[0:2], ["callout", "table_of_contents"])
+        headings = [rf._canonical(b)["content"][0][0] for b in blocks if b["type"]=="heading_1"]
+        self.assertEqual(headings[0], "本周核心结论")
+        self.assertIn("科普选题建议", headings)
+        self.assertIn("检索审计与局限", headings)
+        self.assertIn("A. 临床重点研究、风险分层与指南", headings)
+        self.assertIn("B. 直肠癌新辅助治疗、器官保留与精准手术", headings)
+        self.assertIn("F. 结直肠癌预测模型与医学AI", headings)
+        self.assertIn("G. 基础与转化研究", headings)
+        view = json.dumps([rf._canonical(b) for b in blocks], ensure_ascii=False)
+        self.assertEqual(kinds.count("heading_2"), 4)
+        self.assertNotIn("Unrelated work", view)
+        self.assertIn("有待进一步外部验证", view)
+        for pmid in ("111","222","333","555"):
+            self.assertIn("https://pubmed.ncbi.nlm.nih.gov/"+pmid+"/", view)
+        self.assertIn("NOT_ATTEMPTED", view)
+        self.assertIn("PARTIAL", view)
+
+    def test_empty_included_and_missing_analysis(self):
+        blocks, count = rf.build_report(self.state, [row("PMID:1", "Other", decision="exclude")])
+        self.assertEqual(count,0)
+        self.assertEqual([b["type"] for b in blocks].count("heading_2"),0)
+        with self.assertRaisesRegex(ValueError,"Missing AI decisions"):
+            rf.build_report(self.state,[{"payload":None}])
+
+    def test_text_splitting_preserves_long_analysis(self):
+        x="多项研究" * 850
+        segments=rf._text(x)
+        self.assertEqual("".join(s["text"]["content"] for s in segments),x)
+        self.assertTrue(all(len(s["text"]["content"]) <= 1500 for s in segments))
+
+
+class BlockWriteTest(unittest.TestCase):
+    def setUp(self):
+        self.store=pipeline.Store(":memory:")
+        self.store.migrate()
+        self.addCleanup(self.store.db.close)
+        self.store.sql("INSERT INTO wl_publications(run_key,page_id) VALUES(?,?)",("run","page"))
+        self.blocks=[]
+        self.calls=0
+        self.raise_after_commit=False
+
+    def read(self, url, **kwargs):
+        start=int(url.split("start_cursor=")[1]) if "start_cursor=" in url else 0
+        end=min(start+100,len(self.blocks))
+        return json.dumps({"results":self.blocks[start:end],"has_more":end<len(self.blocks),
+                           "next_cursor":str(end) if end<len(self.blocks) else None}).encode()
+
+    def write(self,req,**kwargs):
+        self.calls+=1
+        inserted=json.loads(req.data)["children"]
+        self.blocks.extend(inserted)
+        if self.raise_after_commit:
+            self.raise_after_commit=False
+            raise TimeoutError("server committed, response lost")
+        class Response:
+            def __enter__(self): return self
+            def __exit__(self,*a): pass
+            def read(self): return b"{}"
+        return Response()
+
+    def test_paged_write_retries_without_duplicate_after_timeout(self):
+        expected=[rf._block("paragraph","Line "+str(i)) for i in range(127)]
+        self.raise_after_commit=True
+        with patch.object(rf,"request",self.read),patch("urllib.request.urlopen",self.write):
+            with self.assertRaises(TimeoutError):
+                rf.publish_report_blocks(self.store,"run","page",expected,"token")
+            self.assertEqual(len(self.blocks),50)
+            rf.publish_report_blocks(self.store,"run","page",expected,"token")
+            self.assertEqual(len(self.blocks),127)
+            self.assertEqual(self.calls,3)
+            rf.publish_report_blocks(self.store,"run","page",expected,"token")
+            self.assertEqual(self.calls,3)
+        self.assertEqual(self.store.sql("SELECT status FROM wl_publications")[0]["status"],"VERIFIED")
+
+    def test_edited_page_is_not_overwritten(self):
+        self.blocks=[rf._block("paragraph","Human edit")]
+        with patch.object(rf,"request",self.read),patch("urllib.request.urlopen") as write:
+            with self.assertRaisesRegex(ValueError,"preserve user edits"):
+                rf.publish_report_blocks(self.store,"run","page",[rf._block("heading_1","Expected")],"token")
+            write.assert_not_called()
+
+    def test_verified_hash_prevents_format_change(self):
+        blocks=[rf._block("paragraph","Original")]
+        with patch.object(rf,"request",self.read),patch("urllib.request.urlopen",self.write):
+            rf.publish_report_blocks(self.store,"run","page",blocks,"token")
+            with self.assertRaisesRegex(ValueError,"content conflict"):
+                rf.publish_report_blocks(self.store,"run","page",[rf._block("paragraph","changed")],"token")
+
+
+class CardMetadataTest(unittest.TestCase):
+    def test_updates_title_status_and_icon_without_raw_run_title(self):
+        properties={
+            "任务批次":{"type":"title"},
+            "执行日期":{"type":"date"},
+            "原始总数":{"type":"number"},
+            "去重后文献数":{"type":"number"},
+            "摘要":{"type":"rich_text"},
+            "处理状态":{"type":"select","select":{"options":[{"name":"完成"},{"name":"数据不完整"}]}}
+        }
+        seen=[]
+        def output(req,**kwargs):
+            seen.append(json.loads(req.data))
+            class Response:
+                def __enter__(self):return self
+                def __exit__(self,*args):pass
+                def read(self):return b"{}"
+            return Response()
+        audit={"raw_hits":1000,"selected":100,"supplementary_sources":{"Europe PMC":{"status":"PARTIAL"}}}
+        def read(url, **kwargs):
+            return json.dumps({'properties':seen[-1]['properties'] if seen else properties}).encode()
+        with patch.object(rf,"request",side_effect=read),patch("urllib.request.urlopen",output):
+            rf.update_report_metadata("weekly-literature:2026-10-12:Asia/Shanghai","page",41,audit,"token","db")
+        data=seen[0]
+        self.assertEqual(data["properties"]["任务批次"]["title"][0]["text"]["content"],"2026-10-12｜每周文献（41项）")
+        self.assertEqual(data["properties"]["处理状态"]["select"]["name"],"数据不完整")
+        self.assertEqual(data["properties"]["去重后文献数"]["number"],41)
+        self.assertEqual(data["icon"]["emoji"],"📫")
+
+    def test_success_response_without_correct_count_fails_readback(self):
+        schema={'properties':{'去重后文献数':{'type':'number'}}}
+        response={'properties':{'去重后文献数':{'number':99}}}
+        class Response:
+            def __enter__(self):return self
+            def __exit__(self,*args):pass
+            def read(self):return b'{}'
+        with patch.object(rf,'request',side_effect=[json.dumps(schema).encode(),json.dumps(response).encode()]),patch('urllib.request.urlopen',return_value=Response()):
+            with self.assertRaisesRegex(ValueError,'metadata readback mismatch'):
+                rf.update_report_metadata('weekly-literature:2026-10-19:Asia/Shanghai','page',96,{},'token','db')
+
+
+if __name__=="__main__":
+    unittest.main()
+
+
+

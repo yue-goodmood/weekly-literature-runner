@@ -1,0 +1,43 @@
+name: Weekly literature
+on:
+  schedule:
+    - cron: '5 0 * * 1'
+    - cron: '15 0 * * 2'
+    - cron: '0 10 * * 5'
+  workflow_dispatch:
+    inputs:
+      mode:
+        type: choice
+        description: Operation (readiness is read-only)
+        options: [readiness, scheduled, etl, publish]
+        default: readiness
+permissions:
+  contents: read
+concurrency:
+  group: weekly-literature-production
+  cancel-in-progress: false
+jobs:
+  run:
+    if: github.ref == 'refs/heads/main' && (vars.ENABLE_PRODUCTION == 'true' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'readiness'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run privately; report status only
+        env:
+          ENABLE_PRODUCTION: ${{ vars.ENABLE_PRODUCTION == 'true' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'readiness') }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          LITERATURE_D1_ID: ${{ secrets.LITERATURE_D1_ID }}
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_DATA_SOURCE_ID: ${{ secrets.NOTION_DATA_SOURCE_ID }}
+          NOTION_ARTICLE_DATA_SOURCE_ID: ${{ secrets.NOTION_ARTICLE_DATA_SOURCE_ID }}
+          NCBI_EMAIL: ${{ secrets.NCBI_EMAIL }}
+          MODE: ${{ inputs.mode || 'scheduled' }}
+        run: PYTHONPATH=weekly-literature/src python weekly-literature/src/public_runner.py --mode "$MODE"
+
