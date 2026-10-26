@@ -4,6 +4,7 @@ import io
 import json
 import os
 import unittest
+import urllib.error
 from unittest.mock import patch
 import public_runner as r
 
@@ -72,4 +73,64 @@ class PublicRunnerTest(unittest.TestCase):
         with patch.dict(os.environ, env), patch.object(r,'publish') as publish:
             self.assertEqual(r.execute('publish', Store()), 'AWAITING_REVIEW')
             publish.assert_not_called()
+
+    def test_oldest_etl_resumes_with_its_original_frozen_config(self):
+        frozen={'version':'old','queries':{}}
+        class Store:
+            def sql(self,sql,*args):
+                if "status='ETL'" in sql:
+                    return [{'run_key':'weekly-literature:2026-10-19:Asia/Shanghai','config_hash':r.digest(frozen)}]
+                return [{'payload':json.dumps(frozen)}]
+        date,config=r.etl_target(Store(),dt.date(2026,11,2),{'version':'new'})
+        self.assertEqual(date,'2026-10-19')
+        self.assertEqual(config,frozen)
+
+    def test_legacy_unfrozen_config_mismatch_fails_closed(self):
+        class Store:
+            def sql(self,sql,*args):
+                if "status='ETL'" in sql:
+                    return [{'run_key':'weekly-literature:2026-10-19:Asia/Shanghai','config_hash':'unknown-original'}]
+                return []
+        self.assertRaises(r.FrozenConfigError,r.etl_target,Store(),dt.date(2026,11,2),{})
+
+    def test_missing_monday_run_can_start_on_wednesday(self):
+        class Store:
+            def sql(self,*args): return []
+        date,_=r.etl_target(Store(),dt.date(2026,10,28),{})
+        self.assertEqual(date,'2026-10-26')
+
+    def test_source_retrieval_does_not_require_notion_credentials(self):
+        class Store:
+            def migrate(self): pass
+            def sql(self,*args): return []
+        env={key:'test-value' for key in r.REQUIRED[:3]}
+        env['ENABLE_PRODUCTION']='true'
+        with patch.dict(os.environ,env,clear=True), patch.object(r,'run_etl') as etl:
+            self.assertEqual(r.execute('etl',Store(),dt.date(2026,10,28)),'ETL_CHECKPOINTED')
+            etl.assert_called_once()
+
+    def test_publish_mode_never_retriages_or_runs_etl(self):
+        class Store:
+            def migrate(self): pass
+            def sql(self,*args): return []
+        env={key:'test-value' for key in r.REQUIRED}
+        env['ENABLE_PRODUCTION']='true'
+        with patch.dict(os.environ,env),patch.object(r,'retune') as retune,patch.object(r,'run_etl') as etl:
+            self.assertEqual(r.execute('publish',Store()),'NO_PENDING_PUBLICATION')
+            retune.assert_not_called()
+            etl.assert_not_called()
+
+    def test_private_phase_error_exposes_only_service_and_http_code(self):
+        def worker(mode):
+            raise r.PhaseError('NOTION',urllib.error.HTTPError('https://example.org/private',403,'PRIVATE',{},None))
+        code,out=self.output(worker)
+        self.assertEqual(code,1)
+        self.assertEqual(out,'weekly-literature: NOTION_HTTP_403\n')
+
+    def test_wrapped_daily_quota_keeps_safe_explicit_status(self):
+        def worker(mode):
+            raise r.PhaseError('ETL',RuntimeError('D1_DAILY_QUOTA_EXCEEDED'))
+        code,out=self.output(worker)
+        self.assertEqual(code,1)
+        self.assertEqual(out,'weekly-literature: D1_DAILY_QUOTA_EXCEEDED\n')
 

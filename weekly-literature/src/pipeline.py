@@ -42,6 +42,9 @@ COLORECTAL_TERMS = re.compile(
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
+def d1_daily_quota(value):
+    return bool(re.search(r'free tier daily row|daily.*limit|quota.*exceed', str(value), re.I))
+
 def request(url, data=None, headers=None):
     for attempt in range(5):
         try:
@@ -49,9 +52,20 @@ def request(url, data=None, headers=None):
             with urllib.request.urlopen(req, timeout=60) as response:
                 return response.read()
         except urllib.error.HTTPError as exc:
+            parsed = urllib.parse.urlparse(url)
+            if parsed.hostname == 'api.cloudflare.com' and '/d1/database/' in parsed.path:
+                # D1 can report its daily quota as a non-2xx HTTP response.
+                # Never retry this response even when the status is 429/5xx.
+                detail = exc.read(16384).decode('utf-8', errors='replace')
+                if d1_daily_quota(detail):
+                    raise RuntimeError('D1_DAILY_QUOTA_EXCEEDED') from None
             if exc.code not in (429, 500, 502, 503, 504) or attempt == 4:
                 raise
-            time.sleep(min(60, max(2 ** attempt, int(exc.headers.get('Retry-After', '0')))))
+            try:
+                retry_after = float(exc.headers.get('Retry-After', '0'))
+            except (ValueError, TypeError):
+                retry_after = 0
+            time.sleep(min(60, max(2 ** attempt, retry_after)))
         except (urllib.error.URLError, TimeoutError):
             if attempt == 4:
                 raise
@@ -59,6 +73,7 @@ def request(url, data=None, headers=None):
 
 class Store:
     def __init__(self, local=None):
+        self.quota_exhausted = False
         self.db = sqlite3.connect(local) if local else None
         if self.db:
             self.db.row_factory = sqlite3.Row
@@ -67,13 +82,27 @@ class Store:
                 os.environ['CLOUDFLARE_ACCOUNT_ID'], os.environ['LITERATURE_D1_ID'])
             self.headers = {'Authorization': 'Bearer ' + os.environ['CLOUDFLARE_API_TOKEN'], 'Content-Type': 'application/json'}
 
+    def remote(self, body):
+        if self.quota_exhausted:
+            raise RuntimeError('D1_DAILY_QUOTA_EXCEEDED')
+        try:
+            result = json.loads(request(self.url, json.dumps(body).encode(), self.headers))
+            details = result.get('errors') or [r.get('error') for r in result.get('result', [])]
+            if d1_daily_quota(json.dumps(details)):
+                raise RuntimeError('D1_DAILY_QUOTA_EXCEEDED')
+            return result
+        except RuntimeError as exc:
+            if exc.args == ('D1_DAILY_QUOTA_EXCEEDED',):
+                self.quota_exhausted = True
+            raise
+
     def sql(self, sql, params=()):
         if self.db:
             cur = self.db.execute(sql, params)
             rows = [dict(r) for r in cur.fetchall()]
             self.db.commit()
             return rows
-        result = json.loads(request(self.url, json.dumps({'sql': sql, 'params': list(params)}).encode(), self.headers))
+        result = self.remote({'sql': sql, 'params': list(params)})
         if not result.get('success') or not all(r.get('success') for r in result.get('result', [])):
             detail = json.dumps(result.get('errors') or [r.get('error') for r in result.get('result', [])],
                                 ensure_ascii=False)[:500]
@@ -92,7 +121,7 @@ class Store:
                         self.db.execute(sql, params)
             else:
                 body = {'batch': [{'sql': sql, 'params': list(params)} for sql, params in group]}
-                result = json.loads(request(self.url, json.dumps(body).encode(), self.headers))
+                result = self.remote(body)
                 if not result.get('success') or len(result.get('result', [])) != len(group) or not all(r.get('success') for r in result.get('result', [])):
                     detail = json.dumps(result.get('errors') or [r.get('error') for r in result.get('result', [])],
                                         ensure_ascii=False)[:500]
@@ -307,6 +336,8 @@ def run_supplements(store, key, config, run, adapters):
                                   ingest_many=lambda articles: ingest_articles(store, key, articles))
             store.sql("UPDATE wl_source_gaps SET status='CLOSED' WHERE source=? AND window_start>=? AND window_end<=?", (name,start,end))
         except (ValueError, RuntimeError, urllib.error.URLError, TimeoutError, ET.ParseError) as exc:
+            if isinstance(exc, RuntimeError) and exc.args == ('D1_DAILY_QUOTA_EXCEEDED',):
+                raise  # No audit write, no next source, no retry until reset.
             detail = type(exc).__name__+': '+str(exc)[:500]
             audit[name] = {'status':'PARTIAL', 'window_start':start, 'window_end':end, 'error':detail}
             store.sql("INSERT INTO wl_source_gaps VALUES(?,?,?,?,?,?) ON CONFLICT(source,run_key) DO UPDATE SET status=excluded.status,error=excluded.error", (name,key,start,end,'PARTIAL',detail))
@@ -335,6 +366,7 @@ def run_etl(store, source, config, run_date, supplements=None):
         return key
     if run['config_hash'] != config_hash:
         raise ValueError('Frozen config differs; restore original config to resume')
+    store.checkpoint(key, 'etl:frozen-config:v1', lambda: config)
     pmids = set()
     raw_hits = 0
     for name, query in config['queries'].items():

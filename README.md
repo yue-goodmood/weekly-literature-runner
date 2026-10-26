@@ -65,9 +65,21 @@ and success/failure of workflow runs are visible to everyone.
    completion. Then declare migration complete; do not infer success from a
    green test or merged commit.
 
-The schedules are Monday/Tuesday retrieval or recovery, and Friday publication
-check. Manual dispatch can publish immediately after medical review completes.
+The schedules are weekday 08:15 retrieval/recovery and an independent weekday
+13:15 publication check (Asia/Shanghai). Retrieval resumes the oldest unfinished
+ETL with its frozen configuration before opening the current week's batch.
+An interrupted Monday job can catch up on later weekdays. Publication mode does
+not run ETL or re-triage, so a source failure cannot block its separate check.
+Manual dispatch can publish immediately after medical review completes.
 GitHub scheduled starts can be delayed and are not an exact-time SLA.
+
+New ETL runs checkpoint their exact configuration before source retrieval. A
+legacy incomplete run without that checkpoint can resume only if its recorded
+hash matches the available configuration; otherwise `FROZEN_CONFIG_REQUIRED`
+requires private recovery of the original configuration, never a silent rewrite.
+Daily D1 quota errors stop further remote calls for that process, including
+audit writes and attempts to fetch another source. Public diagnostics identify
+the failing phase and HTTP code, never exception bodies or private content.
 
 ## Rollback and free-tier boundaries
 
