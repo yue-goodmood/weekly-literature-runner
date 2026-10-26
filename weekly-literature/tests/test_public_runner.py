@@ -10,6 +10,41 @@ import public_runner as r
 
 
 class PublicRunnerTest(unittest.TestCase):
+    def test_completed_week_skips_retrieval(self):
+        class Store:
+            def migrate(self): pass
+            def sql(self, sql, *args):
+                if sql == 'SELECT status FROM wl_runs WHERE run_key=?':
+                    return [{'status':'READY'}]
+                return []
+        env = {key:'test-value' for key in r.REQUIRED[:3]}
+        env['ENABLE_PRODUCTION'] = 'true'
+        with patch.dict(os.environ, env), patch.object(r, 'run_etl') as etl:
+            self.assertEqual(r.execute('etl', Store(), dt.date(2026,10,28)), 'NO_PENDING_ETL')
+            etl.assert_not_called()
+
+    def test_completed_etl_does_not_skip_combined_publication_check(self):
+        class Store:
+            def migrate(self): pass
+            def sql(self, sql, *args):
+                if sql == 'SELECT status FROM wl_runs WHERE run_key=?':
+                    return [{'status':'READY'}]
+                return []
+        env = {key:'test-value' for key in r.REQUIRED}
+        env['ENABLE_PRODUCTION'] = 'true'
+        with patch.dict(os.environ, env), patch.object(r, 'run_etl') as etl:
+            self.assertEqual(r.execute('scheduled', Store()), 'NO_PENDING_PUBLICATION')
+            etl.assert_not_called()
+
+    def test_checkpointed_pauses_are_explicit_and_do_not_trigger_failure_retry(self):
+        for exception, label in [(r.WorkBudgetReached(), 'PAUSED_WORK_BUDGET'),
+                                 (r.UpstreamDeferred(), 'PAUSED_UPSTREAM_COOLDOWN')]:
+            def worker(mode):
+                raise r.PhaseError('ETL', exception)
+            code, out = self.output(worker)
+            self.assertEqual(code, 0)
+            self.assertEqual(out, 'weekly-literature: '+label+'\n')
+
     def output(self, worker):
         out = io.StringIO()
         with contextlib.redirect_stdout(out):

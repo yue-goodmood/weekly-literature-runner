@@ -19,11 +19,12 @@ jobs:
   run:
     if: github.ref == 'refs/heads/main' && (vars.ENABLE_PRODUCTION == 'true' || (github.event_name == 'workflow_dispatch' && inputs.mode == 'readiness'))
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 1
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
@@ -38,5 +39,6 @@ jobs:
           NOTION_ARTICLE_DATA_SOURCE_ID: ${{ secrets.NOTION_ARTICLE_DATA_SOURCE_ID }}
           NCBI_EMAIL: ${{ secrets.NCBI_EMAIL }}
           MODE: ${{ inputs.mode || (github.event.schedule == '15 5 * * 1-5' && 'publish') || 'etl' }}
+          WORK_BUDGET_SECONDS: '600'
         run: PYTHONPATH=weekly-literature/src python weekly-literature/src/public_runner.py --mode "$MODE"
 

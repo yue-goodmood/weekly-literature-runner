@@ -1,5 +1,7 @@
 """Deterministic ETL. Standard library only; no paid inference or Worker compute."""
 import argparse
+import contextlib
+import contextvars
 import datetime as dt
 import hashlib
 import json
@@ -13,10 +15,48 @@ import urllib.request
 import urllib.parse
 import urllib.error
 import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
 TRIAGE_POLICY = 'clinical-signal-v1'
+DEADLINE = contextvars.ContextVar('literature_deadline', default=None)
+
+class WorkBudgetReached(Exception):
+    """Pause before another remote call; persisted checkpoints remain authoritative."""
+
+class UpstreamDeferred(Exception):
+    """A long server cooldown belongs to the next scheduled recovery, not CI sleep."""
+
+@contextlib.contextmanager
+def work_budget(seconds):
+    if not 1 <= seconds <= 1200:
+        raise ValueError('Invalid work budget')
+    token = DEADLINE.set(time.monotonic() + seconds)
+    try:
+        yield
+    finally:
+        DEADLINE.reset(token)
+
+def check_budget(wait=0):
+    deadline = DEADLINE.get()
+    if deadline is not None and time.monotonic() + wait + 65 >= deadline:
+        raise WorkBudgetReached()
+
+def retry_delay(headers, attempt):
+    value = (headers or {}).get('Retry-After', '0')
+    try:
+        delay = float(value)
+    except (ValueError, TypeError):
+        try:
+            delay = (parsedate_to_datetime(value) - dt.datetime.now(dt.timezone.utc)).total_seconds()
+        except (ValueError, TypeError, OverflowError):
+            delay = 0
+    delay = max(2 ** attempt, delay)
+    if delay > 60:
+        raise UpstreamDeferred()
+    check_budget(delay)
+    return delay
 
 AI_TERMS = re.compile(
     r'artificial intelligence|machine learning|deep learning|radiomics|large language models?|'
@@ -46,7 +86,8 @@ def d1_daily_quota(value):
     return bool(re.search(r'free tier daily row|daily.*limit|quota.*exceed', str(value), re.I))
 
 def request(url, data=None, headers=None):
-    for attempt in range(5):
+    for attempt in range(3):
+        check_budget()
         try:
             req = urllib.request.Request(url, data=data, headers=headers or {})
             with urllib.request.urlopen(req, timeout=60) as response:
@@ -59,16 +100,13 @@ def request(url, data=None, headers=None):
                 detail = exc.read(16384).decode('utf-8', errors='replace')
                 if d1_daily_quota(detail):
                     raise RuntimeError('D1_DAILY_QUOTA_EXCEEDED') from None
-            if exc.code not in (429, 500, 502, 503, 504) or attempt == 4:
+            if exc.code not in (429, 500, 502, 503, 504) or attempt == 2:
                 raise
-            try:
-                retry_after = float(exc.headers.get('Retry-After', '0'))
-            except (ValueError, TypeError):
-                retry_after = 0
-            time.sleep(min(60, max(2 ** attempt, retry_after)))
+            time.sleep(retry_delay(exc.headers, attempt))
         except (urllib.error.URLError, TimeoutError):
-            if attempt == 4:
+            if attempt == 2:
                 raise
+            check_budget(2 ** attempt)
             time.sleep(2 ** attempt)
 
 class Store:
@@ -130,10 +168,19 @@ class Store:
                     raise RuntimeError('D1 batch failed; page remains recoverable: '+detail)
 
     def migrate(self):
-        for migration in sorted((ROOT / 'migrations').glob('*.sql')):
+        # One cheap indexed manifest lookup replaces repeated DDL on every tick.
+        migrations = sorted((ROOT / 'migrations').glob('*.sql'))
+        manifest = digest([(m.name, m.read_text()) for m in migrations])
+        exists = self.sql("SELECT 1 FROM sqlite_master WHERE type='table' AND name='wl_checkpoints'")
+        if exists and self.sql('SELECT 1 FROM wl_checkpoints WHERE run_key=? AND unit=?',
+                               ('system:schema', manifest)):
+            return
+        for migration in migrations:
             for statement in migration.read_text().split(';'):
                 if statement.strip():
                     self.sql(statement)
+        self.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
+                 ('system:schema', manifest, 'true'))
 
     def checkpoint(self, run, unit, fetch):
         rows = self.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit=?', (run, unit))

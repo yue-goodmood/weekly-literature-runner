@@ -83,6 +83,28 @@ the failing phase and HTTP code, never exception bodies or private content.
 
 ## Rollback and free-tier boundaries
 
+### Bounded execution without dropping evidence
+
+The production job has a 15-minute hard timeout and a 600-second cooperative
+work budget, including a 65-second reserve before starting another remote call.
+`PAUSED_WORK_BUDGET` and `PAUSED_UPSTREAM_COOLDOWN` mean **incomplete**, not a
+finished retrieval or publication. Existing D1 checkpoints are reused by the next
+weekday run; do not repeatedly click rerun. No fixed candidate-count cap is added.
+Requests make at most three attempts. A server `Retry-After` longer than 60 seconds
+(including HTTP-date values) defers recovery rather than holding a runner open or
+retrying before the cooldown expires. D1 daily-quota errors still stop immediately.
+
+Materialized weekly ETL runs return `NO_PENDING_ETL` without re-entering retrieval.
+Schema migrations use a content-hashed D1 checkpoint, so unchanged schemas do not
+repeat DDL. This is a schema-only marker, never a second source of medical state.
+Daily publication checks remain separate and never load source metadata while
+awaiting medical analysis. Pull-request tests run only for code, config, tools or
+workflow changes; newer commits cancel obsolete test runs. Production writes are
+serialized and are not cancelled in flight. Checkouts are shallow. There are no
+dependency installations, cache uploads, report artifacts, runner matrices or
+automatic workflow self-dispatch loops. Runtime remains on standard Ubuntu in the
+public repository; this does not spend the private-repository monthly minutes.
+
 Disable `ENABLE_PRODUCTION` in this repository and drain its jobs BEFORE
 reenabling the original repository's entry points. Reuse the same D1 history,
 analyses, checkpoints and existing Notion pages; do not restore an old database

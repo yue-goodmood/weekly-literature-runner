@@ -21,6 +21,46 @@ class Source:
             ('1','Rectal cancer organ preservation','10.1/test'),('2','Rectal cancer duplicate','https://doi.org/10.1/TEST.'),('3','Diabetes medication','10.1/other')]]
 
 class PipelineTest(unittest.TestCase):
+    def test_schema_manifest_avoids_repeated_ddl(self):
+        with patch.object(self.store, 'sql', wraps=self.store.sql) as sql:
+            self.store.migrate()
+        self.assertEqual(sql.call_count, 2)
+        self.assertTrue(all('SELECT' in call.args[0] for call in sql.call_args_list))
+
+    def test_expired_budget_never_opens_connection_and_resets(self):
+        token = p.DEADLINE.set(1)
+        try:
+            with patch.object(p.urllib.request, 'urlopen') as send:
+                self.assertRaises(p.WorkBudgetReached, p.request, 'https://example.org')
+                send.assert_not_called()
+        finally:
+            p.DEADLINE.reset(token)
+        with self.assertRaises(p.WorkBudgetReached), p.work_budget(1):
+            p.check_budget()
+        self.assertIsNone(p.DEADLINE.get())
+
+    def test_long_server_cooldown_never_sleeps_or_retries(self):
+        error = urllib.error.HTTPError('https://example.org', 429, 'busy',
+                                      {'Retry-After':'3600'}, io.BytesIO())
+        with patch.object(p.urllib.request, 'urlopen', side_effect=error) as send, patch.object(p.time, 'sleep') as sleep:
+            self.assertRaises(p.UpstreamDeferred, p.request, 'https://example.org')
+            self.assertEqual(send.call_count, 1)
+            sleep.assert_not_called()
+
+    def test_retry_after_http_date_respects_actual_cooldown(self):
+        import datetime
+        now = datetime.datetime(2026, 10, 26, tzinfo=datetime.timezone.utc)
+        with patch.object(p, 'dt', wraps=p.dt) as clock:
+            clock.datetime.now.return_value = now
+            self.assertRaises(p.UpstreamDeferred, p.retry_delay,
+                              {'Retry-After':'Mon, 26 Oct 2026 01:00:00 GMT'}, 0)
+
+    def test_transient_failure_has_three_attempt_ceiling(self):
+        error = urllib.error.HTTPError('https://example.org', 503, 'busy', {}, io.BytesIO())
+        with patch.object(p.urllib.request, 'urlopen', side_effect=error) as send, patch.object(p.time, 'sleep'):
+            self.assertRaises(urllib.error.HTTPError, p.request, 'https://example.org')
+            self.assertEqual(send.call_count, 3)
+
     def setUp(self):
         self.store=p.Store(':memory:'); self.store.migrate(); self.addCleanup(self.store.db.close)
         self.config=json.loads((ROOT/'config/topics.json').read_text()); self.source=Source()
