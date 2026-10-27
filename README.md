@@ -85,6 +85,31 @@ the failing phase and HTTP code, never exception bodies or private content.
 
 ### Bounded execution without dropping evidence
 
+Each process also stops starting new D1 calls after its measured allowance of
+250,000 rows read or 10,000 rows written. This is a local process guard, not a
+reservation of the account's shared daily quota: a single query can cross it,
+and other services can spend the account allowance. `PAUSED_D1_RUN_BUDGET` is
+incomplete work, not daily-quota exhaustion and not a completed report. Metadata
+counts include every statement in a batch. Completed statements keep their
+results; replay-safe checkpoints recover on the next run.
+
+Successful supplementary queries now have an exact query/window/namespace
+completion receipt. Later recovery reads that receipt instead of replaying all
+completed pages. Partial queries never receive it. Incomplete pages retain the
+same duplicate/count checks; already-ingested pages no longer rewrite their
+markers. PubMed ingestion markers are loaded together instead of one remote
+lookup per metadata batch. Source scope and the unlimited evidence policy remain
+unchanged. Fixed allowlisted diagnostic codes distinguish identity conflicts,
+missing metadata, incomplete PMID sets and invalid cursors without publishing
+identifiers, SQL, credentials or upstream payloads.
+
+Firecrawl is optional gap-filling, not a production dependency. There is no
+Firecrawl key or billable request in the runner; a connected ChatGPT tool is not
+implicitly an API credential for GitHub. A source failure is reported rather
+than silently redirected to paid scraping or silently called complete. No model
+inference is executed in these workflows; the medical analysis backlog remains
+work for the connected assistant, not something a green ETL job clears.
+
 The production job has a 15-minute hard timeout and a 600-second cooperative
 work budget, including a 65-second reserve before starting another remote call.
 `PAUSED_WORK_BUDGET` and `PAUSED_UPSTREAM_COOLDOWN` mean **incomplete**, not a
@@ -115,4 +140,5 @@ GitHub policies and platform limits. This does not remove Cloudflare D1 daily
 quotas or upstream API limits. On D1 quota exhaustion stop without repeated
 saves and continue from checkpoints after reset. No Queues, Workflows, R2,
 paid model inference, billing changes, or automatically created cloud accounts.
+
 

@@ -21,6 +21,33 @@ class Source:
             ('1','Rectal cancer organ preservation','10.1/test'),('2','Rectal cancer duplicate','https://doi.org/10.1/TEST.'),('3','Diabetes medication','10.1/other')]]
 
 class PipelineTest(unittest.TestCase):
+    def test_remote_row_budget_stops_before_next_call_without_discarding_result(self):
+        with patch.dict(p.os.environ, {'CLOUDFLARE_ACCOUNT_ID':'example',
+              'LITERATURE_D1_ID':'example','CLOUDFLARE_API_TOKEN':'test',
+              'D1_RUN_READ_BUDGET':'10','D1_RUN_WRITE_BUDGET':'5'}):
+            store = p.Store()
+        result = {'success':True,'result':[{'success':True,'results':[{'ok':1}],
+                    'meta':{'rows_read':10,'rows_written':2}}]}
+        with patch.object(p, 'request', return_value=json.dumps(result).encode()) as send:
+            self.assertEqual(store.sql('SELECT 1'), [{'ok':1}])
+            self.assertRaises(p.DatabaseBudgetReached, store.sql, 'SELECT 2')
+            self.assertEqual(send.call_count, 1)
+        self.assertFalse(store.quota_exhausted)
+
+    def test_d1_write_budget_counts_all_batch_statement_metadata(self):
+        with patch.dict(p.os.environ, {'CLOUDFLARE_ACCOUNT_ID':'example',
+              'LITERATURE_D1_ID':'example','CLOUDFLARE_API_TOKEN':'test',
+              'D1_RUN_READ_BUDGET':'100','D1_RUN_WRITE_BUDGET':'5'}):
+            store = p.Store()
+        result = {'success':True,'result':[
+            {'success':True,'results':[],'meta':{'rows_written':3}},
+            {'success':True,'results':[],'meta':{'rows_written':2}}]}
+        with patch.object(p, 'request', return_value=json.dumps(result).encode()) as send:
+            store.batch([('INSERT 1',()),('INSERT 2',())])
+            self.assertEqual(store.rows_written, 5)
+            self.assertRaises(p.DatabaseBudgetReached, store.sql, 'SELECT 1')
+            self.assertEqual(send.call_count, 1)
+
     def test_schema_manifest_avoids_repeated_ddl(self):
         with patch.object(self.store, 'sql', wraps=self.store.sql) as sql:
             self.store.migrate()
@@ -241,6 +268,7 @@ class PipelineTest(unittest.TestCase):
             p.ingest_articles(self.store,'run',[dict(pmid='2',doi='10.1/first',title='Rectal cancer study two')])
 
 if __name__=='__main__': unittest.main()
+
 
 
 

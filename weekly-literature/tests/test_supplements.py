@@ -8,6 +8,46 @@ from pipeline import Store, aliases, run_supplements
 from supplements import EuropePMC, Arxiv, harvest
 
 class SupplementTests(unittest.TestCase):
+    def test_completed_query_resume_is_one_read_not_full_page_replay(self):
+        from unittest.mock import patch
+        store=Store(':memory:'); store.migrate(); self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            calls=0
+            def page(self,q,start,end,cursor):
+                self.calls += 1
+                return {'records':[{'source_id':'one'}], 'total':1, 'next':None}
+        adapter=Adapter()
+        first=harvest(store,'r',adapter,{'q':'x'},'a','b',lambda item:None)
+        with patch.object(store, 'sql', wraps=store.sql) as sql:
+            second=harvest(store,'r',adapter,{'q':'x'},'a','b',lambda item:None)
+            self.assertEqual(sql.call_count, 1)
+            self.assertTrue(sql.call_args.args[0].startswith('SELECT'))
+        self.assertEqual(first,second)
+        self.assertEqual(adapter.calls,1)
+
+    def test_completed_query_cache_does_not_cross_windows_or_namespaces(self):
+        store=Store(':memory:'); store.migrate(); self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            calls=0
+            def page(self,*args):
+                self.calls += 1
+                return {'records':[], 'total':0, 'next':None}
+        adapter=Adapter()
+        for start,namespace in [('a',''),('c',''),('a','new:')]:
+            harvest(store,'r',adapter,{'q':'x'},start,'z',lambda item:None,namespace=namespace)
+        self.assertEqual(adapter.calls,3)
+
+    def test_partial_query_never_gets_complete_receipt(self):
+        store=Store(':memory:'); store.migrate(); self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            def page(self,*args):
+                return {'records':[], 'total':2, 'next':None}
+        self.assertRaises(ValueError,harvest,store,'r',Adapter(),{'q':'x'},'a','b',lambda item:None)
+        self.assertEqual(store.sql("SELECT 1 FROM wl_checkpoints WHERE unit LIKE '%supplement-complete:%'"),[])
+
     def test_europe_pmc_sort_is_explicit_and_new_cache_cannot_mix_legacy_pages(self):
         urls=[]
         def transport(url):
@@ -78,6 +118,7 @@ class SupplementTests(unittest.TestCase):
         self.assertEqual(audit['test']['status'],'PARTIAL')
         audit=run_supplements(store,'run2',config,{'window_start':'2026-09-01','window_end':'2026-09-21'},{'test':Adapter()})
         self.assertEqual(audit['test']['window_start'],'2026-08-01')
+
 
 
 

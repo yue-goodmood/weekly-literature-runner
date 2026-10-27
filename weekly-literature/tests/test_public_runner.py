@@ -10,6 +10,19 @@ import public_runner as r
 
 
 class PublicRunnerTest(unittest.TestCase):
+    def test_database_budget_pause_is_not_reported_as_daily_quota_or_completion(self):
+        def worker(mode): raise r.PhaseError('ETL',r.DatabaseBudgetReached())
+        code,out=self.output(worker)
+        self.assertEqual(code,0)
+        self.assertEqual(out,'weekly-literature: PAUSED_D1_RUN_BUDGET\n')
+
+    def test_fixed_diagnostic_exposes_no_identifiers_or_upstream_details(self):
+        def worker(mode):
+            raise r.PhaseError('ETL',ValueError('Conflicting identifier aliases require reconciliation: PRIVATE_TOKEN'))
+        code,out=self.output(worker)
+        self.assertEqual(code,1)
+        self.assertEqual(out,'weekly-literature: ETL_IDENTIFIER_CONFLICT\n')
+
     def test_completed_week_skips_retrieval(self):
         class Store:
             def migrate(self): pass
@@ -168,4 +181,5 @@ class PublicRunnerTest(unittest.TestCase):
         code,out=self.output(worker)
         self.assertEqual(code,1)
         self.assertEqual(out,'weekly-literature: D1_DAILY_QUOTA_EXCEEDED\n')
+
 

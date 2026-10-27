@@ -9,7 +9,7 @@ import urllib.error
 from zoneinfo import ZoneInfo
 
 from pipeline import (ROOT, Store, PubMed, TRIAGE_POLICY, digest, request, run_etl,
-                      work_budget, WorkBudgetReached, UpstreamDeferred)
+                      work_budget, WorkBudgetReached, UpstreamDeferred, DatabaseBudgetReached)
 from publish import publish
 from retune_queue import retune
 from supplements import EuropePMC, Arxiv
@@ -28,6 +28,28 @@ class FrozenConfigError(Exception):
 class PhaseError(Exception):
     def __init__(self, phase, cause):
         self.phase, self.cause = phase, cause
+
+
+def diagnostic(cause):
+    # Match fixed code-owned prefixes only; never expose upstream error text.
+    prefixes = (
+        ('Conflicting identifier aliases', 'IDENTIFIER_CONFLICT'),
+        ('Missing metadata;', 'METADATA_INCOMPLETE'),
+        ('Incomplete PMID set', 'PUBMED_RESULT_INCOMPLETE'),
+        ('PubMed search returned an error payload', 'PUBMED_ERROR_PAYLOAD'),
+        ('Source count changed', 'SOURCE_COUNT_CHANGED'),
+        ('Repeated source record', 'SOURCE_RECORD_REPEATED'),
+        ('Incomplete or repeated source cursor', 'SOURCE_CURSOR_INVALID'),
+        ('Frozen config differs', 'FROZEN_CONFIG_MISMATCH'),
+        ('D1 query failed:', 'D1_QUERY_FAILED'),
+        ('D1 batch failed;', 'D1_BATCH_FAILED'),
+    )
+    message = str(cause)
+    for prefix, label in prefixes:
+        if message.startswith(prefix):
+            return label
+    return {ValueError:'VALIDATION_FAILED', KeyError:'RESPONSE_FIELD_MISSING',
+            TimeoutError:'NETWORK_TIMEOUT'}.get(type(cause), 'FAILED_PRIVATE_DETAILS_SUPPRESSED')
 
 
 def etl_target(store, today, config):
@@ -124,9 +146,11 @@ def safe_main(mode, worker=execute):
         return 0
     except BaseException as exc:
         cause = exc.cause if isinstance(exc, PhaseError) else exc
-        if isinstance(cause, (WorkBudgetReached, UpstreamDeferred)):
-            print('weekly-literature: '+('PAUSED_WORK_BUDGET' if isinstance(cause, WorkBudgetReached)
-                                          else 'PAUSED_UPSTREAM_COOLDOWN'))
+        if isinstance(cause, (WorkBudgetReached, UpstreamDeferred, DatabaseBudgetReached)):
+            label = ('PAUSED_D1_RUN_BUDGET' if isinstance(cause, DatabaseBudgetReached) else
+                     'PAUSED_WORK_BUDGET' if isinstance(cause, WorkBudgetReached) else
+                     'PAUSED_UPSTREAM_COOLDOWN')
+            print('weekly-literature: '+label)
             return 0  # A checkpointed pause is not completion and needs no rerun storm.
         # Never stringify an exception in public CI: it can contain URLs,
         # upstream payloads, private page IDs, SQL parameters, or bearer tokens.
@@ -144,7 +168,7 @@ def safe_main(mode, worker=execute):
             elif isinstance(exc.cause, urllib.error.HTTPError):
                 label = exc.phase+'_HTTP_'+str(exc.cause.code)
             else:
-                label = exc.phase+'_FAILED_PRIVATE_DETAILS_SUPPRESSED'
+                label = exc.phase+'_'+diagnostic(exc.cause)
         else:
             label = 'STOPPED_PRIVATE_DETAILS_SUPPRESSED'
         print('weekly-literature: '+label)
@@ -155,4 +179,5 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', choices=('readiness','etl','publish','scheduled'), default='readiness')
     raise SystemExit(safe_main(parser.parse_args().mode))
+
 
