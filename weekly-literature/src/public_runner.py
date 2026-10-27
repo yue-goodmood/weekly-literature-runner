@@ -34,6 +34,7 @@ def diagnostic(cause):
     # Match fixed code-owned prefixes only; never expose upstream error text.
     prefixes = (
         ('Conflicting identifier aliases', 'IDENTIFIER_CONFLICT'),
+        ('Metadata already used in an analysis', 'METADATA_RECONCILIATION_REQUIRED'),
         ('Missing metadata;', 'METADATA_INCOMPLETE'),
         ('Incomplete PMID set', 'PUBMED_RESULT_INCOMPLETE'),
         ('PubMed search returned an error payload', 'PUBMED_ERROR_PAYLOAD'),
@@ -48,8 +49,15 @@ def diagnostic(cause):
     for prefix, label in prefixes:
         if message.startswith(prefix):
             return label
-    return {ValueError:'VALIDATION_FAILED', KeyError:'RESPONSE_FIELD_MISSING',
-            TimeoutError:'NETWORK_TIMEOUT'}.get(type(cause), 'FAILED_PRIVATE_DETAILS_SUPPRESSED')
+    label = {ValueError:'VALIDATION_FAILED', KeyError:'RESPONSE_FIELD_MISSING',
+             TimeoutError:'NETWORK_TIMEOUT'}.get(type(cause), 'FAILED_PRIVATE_DETAILS_SUPPRESSED')
+    trace = cause.__traceback__
+    while trace is not None:
+        filename = trace.tb_frame.f_code.co_filename.rsplit('/',1)[-1]
+        if filename in ('pipeline.py','supplements.py','publish.py','retune_queue.py'):
+            location = filename.removesuffix('.py').upper()+'_L'+str(trace.tb_lineno)
+        trace = trace.tb_next
+    return label+('_'+location if 'location' in locals() else '')
 
 
 def etl_target(store, today, config):

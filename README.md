@@ -85,6 +85,14 @@ the failing phase and HTTP code, never exception bodies or private content.
 
 ### Bounded execution without dropping evidence
 
+When canonical metadata becomes available for evidence already used in an
+analysis, preserve the original article and analysis unchanged. Store the
+incoming version in an idempotent private D1 reconciliation receipt instead of
+aborting all new retrieval. `metadata_upgrades_pending` in the audit counts these
+unresolved upgrades; it does not mean they have been medically re-reviewed or
+that a formerly excluded preprint is now included. Exact DOI and normalized
+title matching remain required for a canonical upgrade proposal.
+
 Each process also stops starting new D1 calls after its measured allowance of
 250,000 rows read or 10,000 rows written. This is a local process guard, not a
 reservation of the account's shared daily quota: a single query can cross it,
