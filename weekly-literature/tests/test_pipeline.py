@@ -21,6 +21,25 @@ class Source:
             ('1','Rectal cancer organ preservation','10.1/test'),('2','Rectal cancer duplicate','https://doi.org/10.1/TEST.'),('3','Diabetes medication','10.1/other')]]
 
 class PipelineTest(unittest.TestCase):
+    def test_canonical_upgrade_never_rewrites_analyzed_evidence_or_blocks_ingestion(self):
+        original={'source':'Europe PMC','source_id':'PPR:old','title':'Rectal cancer study',
+                  'doi':'10.1/upgrade','abstract':'untrusted','types':['Preprint']}
+        p.ingest_articles(self.store,'old-run',[original])
+        evidence=self.store.sql('SELECT evidence_key FROM wl_articles')[0]['evidence_key']
+        original_payload=self.store.sql('SELECT payload FROM wl_articles')[0]['payload']
+        self.store.sql('INSERT INTO wl_analysis VALUES(?,?,?)',
+                       ('old-run',evidence,'{"decision":"exclude","summary":"temporarily unverified"}'))
+        incoming={'pmid':'55','title':'Rectal cancer study','doi':'10.1/upgrade',
+                  'abstract':'Randomized trial in 40 patients','types':['Journal Article']}
+        unrelated={'pmid':'66','title':'Rectal cancer surgery','abstract':'patient cohort','types':[]}
+        p.ingest_articles(self.store,'new-run',[incoming,unrelated])
+        p.ingest_articles(self.store,'new-run',[incoming,unrelated])
+        self.assertEqual(self.store.sql('SELECT payload FROM wl_articles WHERE evidence_key=?',(evidence,))[0]['payload'],original_payload)
+        self.assertEqual(len(self.store.sql('SELECT * FROM wl_analysis')),1)
+        receipts=self.store.sql("SELECT payload FROM wl_checkpoints WHERE unit LIKE 'metadata:upgrade-pending:%'")
+        self.assertEqual(len(receipts),1)
+        self.assertEqual(json.loads(receipts[0]['payload'])['incoming']['pmid'],'55')
+        self.assertEqual(len(self.store.sql("SELECT 1 FROM wl_articles WHERE evidence_key='PMID:66'")),1)
     def test_remote_row_budget_stops_before_next_call_without_discarding_result(self):
         with patch.dict(p.os.environ, {'CLOUDFLARE_ACCOUNT_ID':'example',
               'LITERATURE_D1_ID':'example','CLOUDFLARE_API_TOKEN':'test',

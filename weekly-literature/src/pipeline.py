@@ -362,7 +362,14 @@ def ingest_articles(store, key, articles):
         existing = payloads.get(evidence)
         resolved = authoritative_upgrade(existing, article)
         if existing and resolved != existing and store.sql('SELECT 1 FROM wl_analysis WHERE evidence_key=? LIMIT 1', (evidence,)):
-            raise ValueError('Metadata already used in an analysis; explicit reconciliation required')
+            # Preserve evidence already cited by immutable analyses. A canonical
+            # upgrade requires explicit review, but must not block other papers.
+            unit = 'metadata:upgrade-pending:'+digest([evidence,resolved])
+            receipt = {'evidence_key':evidence, 'prior_hash':digest(existing),
+                       'incoming':resolved, 'status':'PENDING_RECONCILIATION'}
+            statements.append(('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
+                               (key,unit,json.dumps(receipt))))
+            resolved = existing
         payloads[evidence] = resolved
         if existing != resolved:
             statements.append(('INSERT INTO wl_articles VALUES(?,?) ON CONFLICT(evidence_key) DO UPDATE SET payload=excluded.payload', (evidence, json.dumps(resolved))))
@@ -453,6 +460,9 @@ def run_etl(store, source, config, run_date, supplements=None):
     counts = select_candidates(store, key, config['max_candidates'])
     audit = dict(raw_hits=raw_hits, unique_pmids=len(ids), metadata_success=len(ids), **counts,
                  deferred=counts['eligible']-counts['selected'], supplementary_sources=supplementary_audit)
+    audit['metadata_upgrades_pending'] = store.sql(
+        "SELECT count(*) AS n FROM wl_checkpoints WHERE run_key=? AND unit LIKE 'metadata:upgrade-pending:%'",
+        (key,))[0]['n']
     if config['max_candidates'] is None:
         audit['review_policy'] = 'clinical-signal-unlimited-v1'
         audit['triage'] = {'policy': TRIAGE_POLICY}
