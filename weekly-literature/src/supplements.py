@@ -79,6 +79,14 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
     """Freeze pages, verify unique source IDs/counts, never label capped queries complete."""
     counts = {}
     for name, query in queries.items():
+        from pipeline import digest
+        # Exact query/window/namespace identity: never reuse another week's coverage.
+        completed_unit = namespace+getattr(adapter, 'checkpoint_namespace', '')+'supplement-complete:'+adapter.name+':'+digest([name,query,start,end,max_pages])
+        complete = store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit=?',
+                             (run,completed_unit))
+        if complete:
+            counts[name] = json.loads(complete[0]['payload'])['count']
+            continue
         cursor, seen, used = None, set(), set()
         expected = None
         for page_number in itertools.count():
@@ -105,9 +113,11 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
                 else:
                     for article in page['records']:
                         ingest(article)
-            store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',(run,unit+':ingested','true'))
+                store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',(run,unit+':ingested','true'))
             if len(seen) == expected:
                 counts[name] = expected
+                store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
+                          (run,completed_unit,json.dumps({'count':expected})))
                 break
             following = page['next']
             if len(seen) > expected or not page['records'] or following is None or following in used or following == cursor:
@@ -116,6 +126,7 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
             cursor = following
     return {'status': 'COMPLETE_FOR_QUERY', 'counts': counts, 'window_start': start, 'window_end': end,
             'checkpoint_namespace':namespace+getattr(adapter, 'checkpoint_namespace', '')}
+
 
 
 

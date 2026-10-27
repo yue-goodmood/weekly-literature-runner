@@ -28,6 +28,9 @@ class WorkBudgetReached(Exception):
 class UpstreamDeferred(Exception):
     """A long server cooldown belongs to the next scheduled recovery, not CI sleep."""
 
+class DatabaseBudgetReached(Exception):
+    """Per-process D1 allowance consumed; not a claim about account quota."""
+
 @contextlib.contextmanager
 def work_budget(seconds):
     if not 1 <= seconds <= 1200:
@@ -112,6 +115,11 @@ def request(url, data=None, headers=None):
 class Store:
     def __init__(self, local=None):
         self.quota_exhausted = False
+        self.rows_read = self.rows_written = 0
+        self.row_read_budget = int(os.environ.get('D1_RUN_READ_BUDGET', '250000'))
+        self.row_write_budget = int(os.environ.get('D1_RUN_WRITE_BUDGET', '10000'))
+        if self.row_read_budget <= 0 or self.row_write_budget <= 0:
+            raise ValueError('Invalid D1 run budget')
         self.db = sqlite3.connect(local) if local else None
         if self.db:
             self.db.row_factory = sqlite3.Row
@@ -123,11 +131,17 @@ class Store:
     def remote(self, body):
         if self.quota_exhausted:
             raise RuntimeError('D1_DAILY_QUOTA_EXCEEDED')
+        if self.rows_read >= self.row_read_budget or self.rows_written >= self.row_write_budget:
+            raise DatabaseBudgetReached()
         try:
             result = json.loads(request(self.url, json.dumps(body).encode(), self.headers))
             details = result.get('errors') or [r.get('error') for r in result.get('result', [])]
             if d1_daily_quota(json.dumps(details)):
                 raise RuntimeError('D1_DAILY_QUOTA_EXCEEDED')
+            for statement in result.get('result', []):
+                meta = statement.get('meta') or {}
+                self.rows_read += int(meta.get('rows_read', 0))
+                self.rows_written += int(meta.get('rows_written', 0))
             return result
         except RuntimeError as exc:
             if exc.args == ('D1_DAILY_QUOTA_EXCEEDED',):
@@ -422,10 +436,12 @@ def run_etl(store, source, config, run_date, supplements=None):
             raw_hits += len(ids)
             pmids.update(ids)
     ids = sorted(pmids)
+    ingested_units = {row['unit'] for row in store.sql(
+        "SELECT unit FROM wl_checkpoints WHERE run_key=? AND unit LIKE 'ingested:%'", (key,))}
     for offset in range(0, len(ids), 100):
         batch = ids[offset:offset+100]
         unit = 'ingested:' + digest(batch)
-        if store.sql('SELECT 1 FROM wl_checkpoints WHERE run_key=? AND unit=?', (key,unit)):
+        if unit in ingested_units:
             continue
         articles = store.checkpoint(key, 'metadata:' + digest(batch), lambda: source.records(batch))
         ingest_articles(store, key, articles)
@@ -518,6 +534,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 

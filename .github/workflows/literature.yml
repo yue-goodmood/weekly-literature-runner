@@ -1,5 +1,12 @@
 name: Weekly literature
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'weekly-literature/src/**'
+      - 'weekly-literature/config/**'
+      - 'weekly-literature/migrations/**'
+      - '.github/workflows/literature.yml'
   schedule:
     - cron: '15 0 * * 1-5' # 08:15 Shanghai: resume interrupted retrieval
     - cron: '15 5 * * 1-5' # 13:15 Shanghai: independent publication check
@@ -40,5 +47,8 @@ jobs:
           NCBI_EMAIL: ${{ secrets.NCBI_EMAIL }}
           MODE: ${{ inputs.mode || (github.event.schedule == '15 5 * * 1-5' && 'publish') || 'etl' }}
           WORK_BUDGET_SECONDS: '600'
+          D1_RUN_READ_BUDGET: '250000'
+          D1_RUN_WRITE_BUDGET: '10000'
         run: PYTHONPATH=weekly-literature/src python weekly-literature/src/public_runner.py --mode "$MODE"
+
 
