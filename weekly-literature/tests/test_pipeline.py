@@ -21,6 +21,12 @@ class Source:
             ('1','Rectal cancer organ preservation','10.1/test'),('2','Rectal cancer duplicate','https://doi.org/10.1/TEST.'),('3','Diabetes medication','10.1/other')]]
 
 class PipelineTest(unittest.TestCase):
+    def test_cross_run_analysis_identity_lookup_uses_index_not_history_scan(self):
+        plan=self.store.sql('EXPLAIN QUERY PLAN SELECT 1 FROM wl_analysis WHERE evidence_key=? LIMIT 1',('test',))
+        detail=' '.join(row['detail'] for row in plan)
+        self.assertIn('SEARCH',detail)
+        self.assertIn('wl_analysis_by_evidence',detail)
+        self.assertNotIn('SCAN',detail)
     def test_canonical_upgrade_never_rewrites_analyzed_evidence_or_blocks_ingestion(self):
         original={'source':'Europe PMC','source_id':'PPR:old','title':'Rectal cancer study',
                   'doi':'10.1/upgrade','abstract':'untrusted','types':['Preprint']}
