@@ -1,5 +1,12 @@
 name: Weekly literature
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'weekly-literature/src/**'
+      - 'weekly-literature/config/**'
+      - 'weekly-literature/migrations/**'
+      - '.github/workflows/literature.yml'
   schedule:
     - cron: '15 0 * * 1-5' # 08:15 Shanghai: resume interrupted retrieval
     - cron: '15 5 * * 1-5' # 13:15 Shanghai: independent publication check

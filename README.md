@@ -110,6 +110,12 @@ than silently redirected to paid scraping or silently called complete. No model
 inference is executed in these workflows; the medical analysis backlog remains
 work for the connected assistant, not something a green ETL job clears.
 
+Merging runtime/config/schema changes into main triggers one serialized ETL-only
+recovery attempt for deployment validation (production must still be enabled).
+Documentation-only and test-only changes do not. It never self-dispatches and
+does not trigger manual Notion publication. Scheduled independent publication
+checks retain their existing completion and readback gates.
+
 The production job has a 15-minute hard timeout and a 600-second cooperative
 work budget, including a 65-second reserve before starting another remote call.
 `PAUSED_WORK_BUDGET` and `PAUSED_UPSTREAM_COOLDOWN` mean **incomplete**, not a
