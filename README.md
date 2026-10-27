@@ -85,6 +85,12 @@ the failing phase and HTTP code, never exception bodies or private content.
 
 ### Bounded execution without dropping evidence
 
+The cross-run `wl_analysis.evidence_key` lookup has a covering index. Without
+this index, checking each incoming canonical article can scan every historical
+analysis and quickly consume the free D1 read allowance. A query-plan regression
+test requires an indexed SEARCH, not a history SCAN. Existing saved analyses and
+candidate counts are unchanged by this schema migration.
+
 When canonical metadata becomes available for evidence already used in an
 analysis, preserve the original article and analysis unchanged. Store the
 incoming version in an idempotent private D1 reconciliation receipt instead of

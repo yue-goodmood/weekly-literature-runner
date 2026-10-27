@@ -14,7 +14,7 @@ ALLOWED.update('weekly-literature/src/'+name+'.py' for name in (
     'retune_queue','recover','public_runner'))
 ALLOWED.update('weekly-literature/tests/test_'+name+'.py' for name in (
     'pipeline','publish','report_format','retune_queue','supplements','public_runner'))
-ALLOWED.update('weekly-literature/migrations/000'+str(n)+'.sql' for n in range(1,5))
+ALLOWED.update('weekly-literature/migrations/000'+str(n)+'.sql' for n in range(1,6))
 
 
 def audit():
@@ -48,3 +48,4 @@ def audit():
 
 if __name__ == '__main__':
     print(json.dumps(audit(), sort_keys=True))
+
