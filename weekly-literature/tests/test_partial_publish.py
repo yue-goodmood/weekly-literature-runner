@@ -8,6 +8,19 @@ import partial_publish as p
 
 
 class PartialTest(unittest.TestCase):
+    def test_translation_receipts_use_exact_indexed_prefix_not_long_like(self):
+        run='weekly-literature:2026-10-19:Asia/Shanghai'
+        self.store.sql('INSERT INTO wl_checkpoints VALUES(?,?,?)',
+            ('partial:'+run+':1','layout:chinese-titles:v1',json.dumps({'translations':{'Original':'中文'}})))
+        self.store.sql('INSERT INTO wl_checkpoints VALUES(?,?,?)',
+            ('partial:'+run+'-other:1','layout:chinese-titles:v1',json.dumps({'translations':{'Other':'无关'}})))
+        real=self.store.sql
+        def d1(sql,params=()):
+            self.assertNotIn(' LIKE ',sql)
+            return real(sql,params)
+        with patch.object(self.store,'sql',side_effect=d1):
+            self.assertEqual(p.title_translations(self.store,run),{'Original':'中文'})
+
     def setUp(self):
         self.store = pipeline.Store(':memory:')
         self.store.migrate()

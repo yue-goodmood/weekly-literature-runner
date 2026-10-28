@@ -1,25 +1,22 @@
 {
   "version": "digestive-pelvic-v1",
-  "backfill_existing_windows": false,
+  "backfill_existing_windows": true,
   "lookback_days": 14,
   "triage_policy": "digestive-pelvic-v1",
   "max_candidates": null,
   "max_deep_analysis": 10,
   "topics": [
-    "digestive_pelvic",
-    "digestive_ai"
+    "digestive_pelvic"
   ],
   "queries": {
-    "digestive_pelvic": "(Esophageal Diseases[MeSH Terms] OR Gastrointestinal Diseases[MeSH Terms] OR Liver Diseases[MeSH Terms] OR Biliary Tract Diseases[MeSH Terms] OR Pancreatic Diseases[MeSH Terms] OR Pelvic Floor Disorders[MeSH Terms] OR colorectal[Title/Abstract] OR rectal[Title/Abstract] OR gastric[Title/Abstract] OR esophageal[Title/Abstract] OR oesophageal[Title/Abstract] OR \"small bowel\"[Title/Abstract] OR \"small intestine\"[Title/Abstract] OR \"pelvic floor\"[Title/Abstract] OR constipation[Title/Abstract] OR \"fecal incontinence\"[Title/Abstract])",
-    "digestive_ai": "((Esophageal Diseases[MeSH Terms] OR Gastrointestinal Diseases[MeSH Terms] OR Liver Diseases[MeSH Terms] OR Biliary Tract Diseases[MeSH Terms] OR Pancreatic Diseases[MeSH Terms] OR Pelvic Floor Disorders[MeSH Terms] OR colorectal[Title/Abstract] OR rectal[Title/Abstract] OR gastric[Title/Abstract] OR esophageal[Title/Abstract] OR oesophageal[Title/Abstract] OR \"small bowel\"[Title/Abstract] OR \"small intestine\"[Title/Abstract] OR \"pelvic floor\"[Title/Abstract] OR constipation[Title/Abstract] OR \"fecal incontinence\"[Title/Abstract]) AND (\"artificial intelligence\"[Title/Abstract] OR \"machine learning\"[Title/Abstract] OR \"deep learning\"[Title/Abstract] OR \"large language model\"[Title/Abstract] OR \"AI agent\"[Title/Abstract]))"
+    "digestive_pelvic": "(Esophageal Diseases[MeSH Terms] OR Gastrointestinal Diseases[MeSH Terms] OR Liver Diseases[MeSH Terms] OR Biliary Tract Diseases[MeSH Terms] OR Pancreatic Diseases[MeSH Terms] OR Pelvic Floor Disorders[MeSH Terms] OR colorectal[Title/Abstract] OR rectal[Title/Abstract] OR gastric[Title/Abstract] OR esophageal[Title/Abstract] OR oesophageal[Title/Abstract] OR \"small bowel\"[Title/Abstract] OR \"small intestine\"[Title/Abstract] OR \"pelvic floor\"[Title/Abstract] OR constipation[Title/Abstract] OR \"fecal incontinence\"[Title/Abstract] OR colonoscopy[Title/Abstract] OR gastroscopy[Title/Abstract] OR enteroscopy[Title/Abstract] OR \"endoscopic submucosal dissection\"[Title/Abstract] OR \"endoscopic mucosal resection\"[Title/Abstract])"
   },
   "supplementary_sources": {
     "Europe PMC": {
       "enabled": true,
       "max_pages": null,
       "queries": {
-        "digestive_pelvic": "TITLE_ABS:(colorectal OR rectal OR gastric OR esophageal OR oesophageal OR gastrointestinal OR \"small bowel\" OR \"small intestine\" OR \"pelvic floor\" OR constipation OR \"fecal incontinence\" OR Crohn OR colitis OR liver OR hepatic OR biliary OR pancreatic)",
-        "digestive_ai": "TITLE_ABS:(colorectal OR rectal OR gastric OR esophageal OR oesophageal OR gastrointestinal OR \"small bowel\" OR \"small intestine\" OR \"pelvic floor\" OR constipation OR \"fecal incontinence\" OR Crohn OR colitis OR liver OR hepatic OR biliary OR pancreatic) AND TITLE_ABS:(\"artificial intelligence\" OR \"machine learning\" OR \"deep learning\" OR \"large language model\" OR \"AI agent\")"
+        "digestive_pelvic": "TITLE_ABS:(colorectal OR rectal OR gastric OR esophageal OR oesophageal OR gastrointestinal OR \"small bowel\" OR \"small intestine\" OR \"pelvic floor\" OR constipation OR \"fecal incontinence\" OR Crohn OR colitis OR liver OR hepatic OR biliary OR pancreatic OR colonoscopy OR gastroscopy OR enteroscopy OR \"endoscopic submucosal dissection\" OR \"endoscopic mucosal resection\")"
       }
     },
     "arXiv": {

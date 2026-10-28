@@ -186,6 +186,8 @@ def execute(mode, store=None, today=None):
                     if not synced:
                         break
                     changed = True
+                if changed:
+                    store.sql("UPDATE wl_runs SET audit=json_remove(audit,'$.delivery_diagnostic') WHERE run_key=?",(row['run_key'],))
                 if row['selected'] == row['analyzed']:
                     if has_unsynced(store, row['run_key']):
                         return 'PARTIAL_SYNC_VERIFIED'
