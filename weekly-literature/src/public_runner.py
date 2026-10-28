@@ -177,6 +177,11 @@ def execute(mode, store=None, today=None):
                     try:
                         synced=sync_partial(store, row['run_key'], progress)
                     except Exception as exc:
+                        if isinstance(exc,urllib.error.HTTPError) and exc.code==400 and getattr(exc,'safe_service','')=='D1':
+                            detail=getattr(exc,'private_detail',None)
+                            if detail:
+                                store.sql("UPDATE wl_runs SET audit=json_set(audit,'$.delivery_diagnostic',json(?)) WHERE run_key=?",
+                                    (json.dumps(detail),row['run_key']))
                         raise PhaseError('PARTIAL',exc) from None
                     if not synced:
                         break
