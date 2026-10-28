@@ -36,6 +36,33 @@ def _block(kind, content, **extra):
     return {"object": "block", "type": kind, kind: body}
 
 
+def format_blocks(blocks):
+    """Historical weekly style; change presentation only, never evidence text."""
+    import copy
+    result = copy.deepcopy(blocks)
+    for block in result:
+        kind = block['type']
+        if kind == 'callout':
+            block[kind]['color'] = 'blue_background'
+        if kind == 'table_of_contents':
+            block[kind]['color'] = 'gray'
+        if kind not in ('bulleted_list_item', 'callout'):
+            continue
+        rich = block[kind].get('rich_text', [])
+        if not rich or rich[0].get('type') != 'text':
+            continue
+        first = rich[0]['text']['content']
+        match = re.match(r'^([^：:｜]{1,18}[：:｜])', first)
+        if match:
+            label = copy.deepcopy(rich[0])
+            label['text']['content'] = match.group(1)
+            label['annotations'] = {**label.get('annotations', {}), 'bold': True}
+            remainder = copy.deepcopy(rich[0])
+            remainder['text']['content'] = first[match.end():]
+            block[kind]['rich_text'] = [label] + ([remainder] if remainder['text']['content'] else []) + rich[1:]
+    return result
+
+
 def _source_parts(article, evidence_key):
     parts = []
     pmid = str(article.get("pmid") or "")
@@ -143,12 +170,13 @@ def build_report(state, rows):
             a = item["article"]
             v = item["analysis"]
             head(str(rank) + ". " + str(a.get("title") or item["key"]), 2)
+            bullet("英文原题：" + str(a.get("title") or "未报告"))
             page.append({"object": "block", "type": "bulleted_list_item",
                          "bulleted_list_item": {"rich_text": _source_parts(a, item["key"])}})
             bullet("期刊／日期：" + str(a.get("journal") or "未报告") +
                    "；" + str(a.get("publication_date") or "未报告"))
             bullet("研究解读：" + str(v.get("summary") or "未报告"))
-            bullet("科普候选与证据边界：" + str(v.get("popscience") or "未报告"))
+            bullet("科普候选／证据边界：" + str(v.get("popscience") or "未报告"))
 
     head("科普选题建议")
     priority = {"high": 0, "medium": 1, "low": 2}
@@ -169,7 +197,7 @@ def build_report(state, rows):
                ("；错误类别：" + str(info["error"]) if info.get("error") else ""))
     para("PUBLISHED表示已送达Notion并读回验证，不等于全部来源覆盖完整；摘要分析不能替代全文审阅，也不构成患者诊疗建议。")
     para("稳定追溯键：" + state["run_key"] + "｜排版版本：" + REPORT_STYLE_VERSION)
-    return page, len(papers)
+    return format_blocks(page), len(papers)
 
 
 def _canonical(block):
@@ -294,6 +322,7 @@ def update_report_metadata(run, page, included, audit, token, data_source):
             matches = got == wanted
         if not matches:
             raise ValueError('Notion report metadata readback mismatch: '+name)
+
 
 
 

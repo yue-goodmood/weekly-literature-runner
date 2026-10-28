@@ -85,6 +85,23 @@ content is preserved. Main-branch deployment pushes check publication
 only, avoiding retrieval work on a publishing-code deployment. Existing weekday
 publication checks continue batching; no new high-frequency schedule is added.
 
+### Historical weekly layout
+
+The presentation template follows the established weekly pages: blue status
+callout, native contents, core findings, retrieval/inclusion overview, A-G topic
+groups, numbered papers, original titles, source links, journal/date, saved
+analysis, patient-education boundaries, suggestions and source audit. Field
+labels are bold; no scientific text is regenerated for formatting. Processing
+and final indexes retain the same section hierarchy while linking batch bodies.
+
+A versioned presentation-only upgrade handles existing generated partial pages.
+It first verifies the exact D1 body hash, freezes an upgrade intent, and updates
+only styling. The old generated index is archived and rebuilt in the new layout;
+its entries and counts are retained, and archived blocks remain recoverable.
+Interrupted upgrades reconcile exact old/new states and update D1 hashes only
+after readback. Unknown edits, references or child content fail closed. Existing
+historical final reports are not rewritten by this migration.
+
 The schedules are weekday 08:15 retrieval/recovery and an independent weekday
 13:15 publication check (Asia/Shanghai). Retrieval resumes the oldest unfinished
 ETL with its frozen configuration before opening the current week's batch.

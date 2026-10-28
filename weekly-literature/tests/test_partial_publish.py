@@ -24,6 +24,7 @@ class PartialTest(unittest.TestCase):
         self.stack.enter_context(patch.object(p, 'finalize_article_title'))
         self.stack.enter_context(patch.object(p, 'publish_draft'))
         self.stack.enter_context(patch.object(p, 'publish_report_blocks', side_effect=self.write))
+        self.stack.enter_context(patch('layout_upgrade.upgrade_progress'))
 
     def write(self, store, artifact, page, blocks, token, **kwargs):
         self.calls.append((artifact, blocks, kwargs))
@@ -68,7 +69,7 @@ class PartialTest(unittest.TestCase):
         entries=p.cached(self.store,self.run,p.INDEX,[])
         self.assertEqual([e['count'] for e in entries],[50,1])
         self.assertEqual(len(self.calls[-1][1]),1)
-        self.assertEqual(len(self.calls[-1][2]['prefix']),3)
+        self.assertEqual(len(self.calls[-1][2]['prefix']),len(p.progress_blocks(self.run,entries[:1])))
 
     def test_draft_failure_does_not_mark_batch_delivered(self):
         self.add('PMID:1')
