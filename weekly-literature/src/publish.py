@@ -104,7 +104,7 @@ def publish(store, run):
     if any(row['payload'] is None for row in rows):
         raise ValueError('Missing AI decisions; resume only outstanding candidates')
     audit = json.loads(state['audit'])
-    if audit.get('scope',{}).get('backfill',{}).get('status')=='RUNNING':
+    if audit.get('scope',{}).get('backfill',{}).get('status')=='RUNNING' or audit.get('scope',{}).get('coverage')=='legacy_queue_retriage_only':
         raise ValueError('Scope backfill incomplete; refuse final publication')
     from partial_publish import cached, INDEX, has_unsynced, final_index, final_artifact
     artifact=final_artifact(state)

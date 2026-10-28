@@ -218,6 +218,13 @@ def build_report(state, rows):
                ("；窗口：" + str(info["window_start"]) + " 至 " + str(info["window_end"])
                 if info.get("window_start") and info.get("window_end") else "") +
                ("；错误类别：" + str(info["error"]) if info.get("error") else ""))
+    backfill=audit.get('scope',{}).get('backfill',{})
+    if backfill:
+        bullet('范围扩展补检：'+str(backfill.get('status','未完成'))+'；与原检索审计分开，不把原检索完成视为补检完成。')
+        windows=backfill.get('sources') or backfill.get('source_windows',{})
+        for name,info in windows.items():
+            bullet('补检 '+name+'：'+str(info.get('status','未完成' if info.get('window_start') else 'NOT_ATTEMPTED'))+
+                '；窗口：'+str(info.get('window_start','未检索'))+' 至 '+str(info.get('window_end','未检索')))
     para("PUBLISHED表示已送达Notion并读回验证，不等于全部来源覆盖完整；摘要分析不能替代全文审阅，也不构成患者诊疗建议。")
     para("稳定追溯键：" + state["run_key"] + "｜排版版本：" + REPORT_STYLE_VERSION)
     return format_blocks(page), len(papers)

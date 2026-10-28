@@ -64,6 +64,12 @@ def final_index(state, rows, entries):
     for name, info in audit.get('supplementary_sources',{}).items():
         blocks.append(_block('paragraph',name+'：'+str(info.get('status','UNKNOWN'))+
                              '；窗口：'+str(info.get('window_start','未报告'))+' 至 '+str(info.get('window_end','未报告'))))
+    backfill=audit.get('scope',{}).get('backfill',{})
+    if backfill:
+        blocks.append(_block('paragraph','范围扩展补检：'+str(backfill.get('status','未完成'))))
+        for name,info in backfill.get('sources',{}).items():
+            blocks.append(_block('paragraph','补检 '+name+'：'+str(info.get('status','UNKNOWN'))+
+                '；窗口：'+str(info.get('window_start','未检索'))+' 至 '+str(info.get('window_end','未检索'))))
     blocks.append(_block('paragraph','COMPLETE_FOR_QUERY仅代表预设查询完成，不代表全部来源完整覆盖。分析基于既有证据材料，不替代全文医学审核或患者诊疗。'))
     return format_blocks(blocks), included
 
@@ -99,7 +105,7 @@ def progress_blocks(run, entries):
         _block('heading_1','检索审计与局限'),
         _block('paragraph','来源状态和窗口保留在各批文末。COMPLETE_FOR_QUERY仅代表既定查询完成；PARTIAL及未检索来源不得写成完整。分析基于摘要时仍须保留限定。'),
         _block('heading_1','文献分析（分批阅读）'),
-        _block('paragraph','按消化系统与相关盆底疾病分组；其他专科AI不纳入。基础转化仅用于明确的机制研究，未分类临床文章另列。旧积压仅在原检索范围内重筛，扩展病种检索从新批次生效，不宣称已补齐旧窗口。')]
+        _block('paragraph','按消化系统与相关盆底疾病分组；其他专科AI不纳入。基础转化仅用于明确的机制研究，未分类临床文章另列。范围扩展补检按原来源窗口独立审计；未完成时不能把原检索完成状态当作扩展范围完整覆盖。')]
     for item in entries:
         old = legacy_progress_blocks(run, [item])[-1]
         blocks.append(_block('bulleted_list_item', old['paragraph']['rich_text'][0]['text']['content']))
@@ -139,6 +145,10 @@ def sync_partial(store, run, progress):
     state = store.sql('SELECT * FROM wl_runs WHERE run_key=?', (run,))[0]
     if state['status'] != 'READY':
         raise ValueError('Partial sync requires READY run')
+    if 'state_snapshot' not in active:
+        active['state_snapshot']=state
+        store.sql('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',(run,ACTIVE,json.dumps(active)))
+    state=active['state_snapshot']
     artifact = 'partial:'+run+':'+TRIAGE_POLICY+':'+str(active['number'])
     page = provision_page(store, artifact)
     blocks, included = build_report(state, rows)

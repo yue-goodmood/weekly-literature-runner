@@ -10,6 +10,21 @@ import public_runner as r
 
 
 class PublicRunnerTest(unittest.TestCase):
+    def test_existing_analysis_delivered_before_backfill_and_no_finalization(self):
+        audit={'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY},
+               'scope':{'policy':r.TRIAGE_POLICY,'coverage':'legacy_queue_retriage_only'}}
+        class Store:
+            def migrate(self): pass
+            def sql(self,sql,*args):
+                if sql.startswith('SELECT payload'): return []
+                return [{'run_key':'synthetic-run','status':'READY','audit':json.dumps(audit),
+                         'selected':10,'analyzed':10}]
+        order=[];env={k:'test' for k in r.REQUIRED};env['ENABLE_PRODUCTION']='true'
+        with patch.dict(os.environ,env),patch.object(r,'sync_partial',side_effect=lambda *a:order.append('deliver') or False), \
+             patch('backfill.resume',side_effect=lambda *a:order.append('backfill')),patch.object(r,'publish') as final:
+            self.assertEqual(r.execute('publish',Store()),'BACKFILL_COMPLETED')
+        self.assertEqual(order,['deliver','backfill']);final.assert_not_called()
+
     def test_complete_analysis_waits_for_all_notion_batches(self):
         class Store:
             def migrate(self): pass
