@@ -11,9 +11,9 @@ ALLOWED = {'README.md', '.gitignore', '.github/workflows/literature.yml',
            'weekly-literature/config/topics.json'}
 ALLOWED.update('weekly-literature/src/'+name+'.py' for name in (
     'pipeline','publish','supplements','report_format','verify_publication',
-    'retune_queue','recover','public_runner'))
+    'retune_queue','recover','public_runner','partial_publish'))
 ALLOWED.update('weekly-literature/tests/test_'+name+'.py' for name in (
-    'pipeline','publish','report_format','retune_queue','supplements','public_runner'))
+    'pipeline','publish','report_format','retune_queue','supplements','public_runner','partial_publish'))
 ALLOWED.update('weekly-literature/migrations/000'+str(n)+'.sql' for n in range(1,6))
 
 
@@ -31,7 +31,10 @@ def audit():
                r'https://(?:www\.)?notion\.(?:so|site)/']
     for name, path in paths.items():
         text = path.read_text()
-        if any(re.search(pattern, text) for pattern in markers):
+        # A quoted public origin contains no page identifier. Concrete private
+        # URLs are still rejected; only this exact reusable literal is exempt.
+        inspected = re.sub(r'''(['"])https://www[.]notion[.]so/\1''', 'PUBLIC_NOTION_ORIGIN', text)
+        if any(re.search(pattern, inspected) for pattern in markers):
             raise ValueError('Sensitive export marker; inspect privately')
         if name.endswith('.py'):
             ast.parse(text)

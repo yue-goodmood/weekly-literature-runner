@@ -11,6 +11,7 @@ from report_format import build_report, publish_report_blocks, _block, _canonica
 INDEX = 'notion:partial:index:v1'
 ACTIVE = 'notion:partial:active:v1'
 SHOWN = 'notion:partial:shown:v1:'
+NOTION_ORIGIN = 'https://www.notion.so/'
 
 
 def has_unsynced(store, run):
@@ -33,7 +34,7 @@ def final_index(state, rows, entries):
               _block('heading_1','文献分析（分批阅读）')]
     for item in entries:
         blocks.append(_block('paragraph', '批次'+str(item['number'])+'｜复核'+str(item['count'])+
-                             '、纳入'+str(item['included'])+'：https://www.notion.so/'+item['page'].replace('-','')))
+                             '、纳入'+str(item['included'])+'：'+NOTION_ORIGIN+item['page'].replace('-','')))
     blocks.append(_block('heading_1','检索审计与适用边界'))
     blocks.append(_block('paragraph','检索窗口：'+state['window_start']+' 至 '+state['window_end']))
     for name, info in audit.get('supplementary_sources',{}).items():
@@ -56,7 +57,7 @@ def progress_blocks(run, entries):
         blocks.append(_block('paragraph',
             '批次'+str(item['number'])+'｜已分析 '+str(p['analyzed'])+'/'+str(p['selected'])+
             '；待分析 '+str(p['selected']-p['analyzed'])+'；本批复核 '+str(item['count'])+
-            '、纳入 '+str(item['included'])+'。阅读：https://www.notion.so/'+item['page'].replace('-', '')))
+            '、纳入 '+str(item['included'])+'。阅读：'+NOTION_ORIGIN+item['page'].replace('-', '')))
     return blocks
 
 
@@ -127,7 +128,7 @@ def finish_progress(store, run):
     page = provision_page(store, artifact)
     old = progress_blocks(run, entries)
     tail = [_block('heading_1', '本批分析已全部完成'),
-            _block('paragraph', '最终周报已独立核验：https://www.notion.so/'+target.replace('-', '')+
+            _block('paragraph', '最终周报已独立核验：'+NOTION_ORIGIN+target.replace('-', '')+
                    '。来源缺口仍以最终审计为准；科普文章仍待医学审核。')]
     publish_report_blocks(store, artifact, page, tail, os.environ['NOTION_TOKEN'],
                           prefix=[_canonical(b) for b in old])
