@@ -5,13 +5,18 @@ delivery nor an empty delta commits wl_history or finalizes a literature run.
 """
 import json
 import os
+from pipeline import TRIAGE_POLICY
 from publish import provision_page, finalize_article_title, publish_draft
 from report_format import build_report, publish_report_blocks, _block, _canonical, format_blocks
 
-INDEX = 'notion:partial:index:v1'
-ACTIVE = 'notion:partial:active:v1'
-SHOWN = 'notion:partial:shown:v1:'
+INDEX = 'notion:partial:index:'+TRIAGE_POLICY
+ACTIVE = 'notion:partial:active:'+TRIAGE_POLICY
+SHOWN = 'notion:partial:shown:'+TRIAGE_POLICY+':'
 NOTION_ORIGIN = 'https://www.notion.so/'
+
+
+def final_artifact(state):
+    return state['run_key']+':'+TRIAGE_POLICY if state.get('status')!='PUBLISHED' and json.loads(state.get('audit') or '{}').get('triage',{}).get('policy')==TRIAGE_POLICY else state['run_key']
 
 
 def has_unsynced(store, run):
@@ -70,7 +75,7 @@ def legacy_progress_blocks(run, entries):
 
 def progress_blocks(run, entries):
     blocks = [
-        _block('callout', '处理中｜'+run.split(':')[1]+'批次。分批保存已分析文献，不是最终周报。医学结论不在排版时重新生成。',
+        _block('callout', '处理中｜消化系统与盆底疾病专版；'+run.split(':')[1]+'批次。旧宽口径版保留作历史，本版按新范围分批保存，不是最终周报。',
                icon={'type':'emoji','emoji':'📚'}),
         {'object':'block','type':'table_of_contents','table_of_contents':{}},
         _block('heading_1','本周核心结论'),
@@ -82,7 +87,7 @@ def progress_blocks(run, entries):
         _block('heading_1','检索审计与局限'),
         _block('paragraph','来源状态和窗口保留在各批文末。COMPLETE_FOR_QUERY仅代表既定查询完成；PARTIAL及未检索来源不得写成完整。分析基于摘要时仍须保留限定。'),
         _block('heading_1','文献分析（分批阅读）'),
-        _block('paragraph','各批沿用A—G专题分组：临床重点与指南；新辅助与器官保留；外科与围术期；康复与患者报告结局；筛查与系统治疗；医学AI；基础转化。每篇保留原题、来源、期刊日期、研究解读与科普边界。')]
+        _block('paragraph','按消化系统与相关盆底疾病分组；其他专科AI不纳入。基础转化仅用于明确的机制研究，未分类临床文章另列。旧积压仅在原检索范围内重筛，扩展病种检索从新批次生效，不宣称已补齐旧窗口。')]
     for item in entries:
         old = legacy_progress_blocks(run, [item])[-1]
         blocks.append(_block('bulleted_list_item', old['paragraph']['rich_text'][0]['text']['content']))
@@ -92,9 +97,6 @@ def progress_blocks(run, entries):
 def sync_partial(store, run, progress):
     """Sync at most 50 saved decisions; freeze the selection before Notion writes."""
     entries = cached(store, run, INDEX, [])
-    if entries:
-        from layout_upgrade import upgrade_progress
-        upgrade_progress(store, run, entries)
     active = cached(store, run, ACTIVE, None)
     if active is None:
         rows = store.sql(
@@ -116,10 +118,19 @@ def sync_partial(store, run, progress):
         'ORDER BY c.evidence_key', (run, *active['keys']))
     if len(rows) != len(active['keys']):
         raise ValueError('Partial batch metadata or analysis missing')
+    translations={}
+    for receipt in store.sql('SELECT payload FROM wl_checkpoints WHERE run_key LIKE ? AND unit=?',
+            ('partial:'+run+':%','layout:chinese-titles:v1')):
+        translations.update(json.loads(receipt['payload']).get('translations',{}))
+    for row in rows:
+        article=json.loads(row['article'])
+        if article.get('title') in translations:
+            article['display_title_zh']=translations[article['title']]
+            row['article']=json.dumps(article,ensure_ascii=False)
     state = store.sql('SELECT * FROM wl_runs WHERE run_key=?', (run,))[0]
     if state['status'] != 'READY':
         raise ValueError('Partial sync requires READY run')
-    artifact = 'partial:'+run+':'+str(active['number'])
+    artifact = 'partial:'+run+':'+TRIAGE_POLICY+':'+str(active['number'])
     page = provision_page(store, artifact)
     blocks, included = build_report(state, rows)
     blocks[0] = _block('callout', '处理中｜分批同步，不是最终周报。本批复核'+str(len(rows))+
@@ -127,18 +138,18 @@ def sync_partial(store, run, progress):
                        icon={'type':'emoji','emoji':'📚'})
     blocks[-2] = _block('paragraph', '本批送达仅代表上述分析已读回核验，运行仍在处理中；来源覆盖和医学审核均不因此完成。')
     publish_report_blocks(store, artifact, page, format_blocks(blocks), os.environ['NOTION_TOKEN'])
-    finalize_article_title(page, artifact, run.split(':')[1]+'｜处理中·文献批次'+str(active['number']))
+    finalize_article_title(page, artifact, run.split(':')[1]+'｜消化系统专版·批次'+str(active['number']))
     for row in rows:
         publish_draft(store, row)
     entry = dict(number=active['number'], page=page, count=len(rows), included=included, progress=active['progress'])
-    index_artifact = 'progress:'+run
+    index_artifact = 'progress:'+run+':'+TRIAGE_POLICY
     index_page = provision_page(store, index_artifact)
     old = progress_blocks(run, entries)
     new = progress_blocks(run, entries+[entry])
     # Prefix hashes permit only verified extension; edited pages fail closed.
     publish_report_blocks(store, index_artifact, index_page, new[len(old):] if entries else new,
                           os.environ['NOTION_TOKEN'], prefix=[_canonical(b) for b in old] if entries else None)
-    finalize_article_title(index_page, index_artifact, run.split(':')[1]+'｜每周文献（处理中·分批更新）')
+    finalize_article_title(index_page, index_artifact, run.split(':')[1]+'｜每周文献（消化系统专版·处理中）')
     store.batch([('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)', (run, SHOWN+key, artifact))
                  for key in active['keys']]+[
         ('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)', (run, INDEX, json.dumps(entries+[entry]))),
@@ -151,13 +162,11 @@ def finish_progress(store, run):
     entries = cached(store, run, INDEX, [])
     if not entries:
         return
-    from layout_upgrade import upgrade_progress
-    upgrade_progress(store, run, entries)
-    state = store.sql('SELECT status FROM wl_runs WHERE run_key=?', (run,))[0]
+    state = store.sql('SELECT * FROM wl_runs WHERE run_key=?', (run,))[0]
     if state['status'] != 'PUBLISHED':
         raise ValueError('Final run not published')
-    target = store.sql('SELECT page_id FROM wl_publications WHERE run_key=?', (run,))[0]['page_id']
-    artifact = 'progress:'+run
+    target = store.sql('SELECT page_id FROM wl_publications WHERE run_key=?', (final_artifact(state),))[0]['page_id']
+    artifact = 'progress:'+run+':'+TRIAGE_POLICY
     page = provision_page(store, artifact)
     old = progress_blocks(run, entries)
     tail = [_block('heading_1', '本批分析已全部完成'),
@@ -165,7 +174,7 @@ def finish_progress(store, run):
                    '。来源缺口仍以最终审计为准；科普文章仍待医学审核。')]
     publish_report_blocks(store, artifact, page, tail, os.environ['NOTION_TOKEN'],
                           prefix=[_canonical(b) for b in old])
-    finalize_article_title(page, run.split(':')[1]+'｜每周文献（处理中·分批更新）',
+    finalize_article_title(page, run.split(':')[1]+'｜每周文献（消化系统专版·处理中）',
                            run.split(':')[1]+'｜每周文献（已完成·分批索引）')
     store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
               (run, 'notion:partial:finished:v1', 'true'))

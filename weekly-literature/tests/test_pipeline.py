@@ -146,7 +146,7 @@ class PipelineTest(unittest.TestCase):
         self.config['max_candidates']=10
         class Mixed(Source):
             def search(self,*args): return [str(i) for i in range(20)]
-            def records(self,ids): return [dict(pmid=i,title=('Rectal cancer study ' if int(i)<10 else 'Machine learning for medical diagnosis ')+i,abstract='retrospective cohort of 50 patients',types=[]) for i in ids]
+            def records(self,ids): return [dict(pmid=i,title=('Rectal cancer study ' if int(i)<10 else 'Machine learning for gastric diagnosis ')+i,abstract='retrospective cohort of 50 patients',types=[]) for i in ids]
         p.run_etl(self.store,Mixed(),self.config,'2026-09-22')
         self.assertEqual(self.store.sql('SELECT count(*) AS n FROM wl_candidates WHERE selected=1 AND score<50')[0]['n'],4)
         self.assertEqual(self.store.sql('SELECT count(*) AS n FROM wl_candidates WHERE selected=1')[0]['n'],10)
@@ -236,11 +236,11 @@ class PipelineTest(unittest.TestCase):
             ({'title':'LARS unrelated protein study'},False),
             ({'title':'Machine learning for medical diagnosis'},False),
             ({'title':'Machine learning for medical diagnosis',
-              'abstract':'External validation in a retrospective cohort of 300 patients.'},True),
+              'abstract':'External validation in a retrospective cohort of 300 patients.'},False),
             ({'title':'Shapley value estimation for multi-site data',
               'abstract':'Applications include biomedicine and environmental monitoring.'},False),
             ({'title':'A primer on evaluation methods for large language models in healthcare',
-              'abstract':'A systematic review of clinical evaluation and patient safety.'},True),
+              'abstract':'A systematic review of clinical evaluation and patient safety.'},False),
             ({'title':'Rectal cancer shared decision making'},True),
             ({'title':'Peripheral vascular surgery'},False),
         ]
@@ -252,7 +252,7 @@ class PipelineTest(unittest.TestCase):
         p.ingest_articles(self.store,'run',[
             dict(pmid='1',title='Generic transformer architecture',
                  abstract='Healthcare is a possible future application.',types=[]),
-            dict(pmid='2',title='Deep learning for clinical diagnosis',
+            dict(pmid='2',title='Deep learning for gastric diagnosis',
                  abstract='External validation in 120 patients.',types=[]),
         ])
         self.assertEqual([r['evidence_key'] for r in self.store.sql('SELECT evidence_key FROM wl_articles')],
@@ -279,11 +279,22 @@ class PipelineTest(unittest.TestCase):
 
     def test_generic_title_does_not_merge_distinct_dois(self):
         p.ingest_articles(self.store,'run',[
-            dict(pmid='1',doi='10.1/first',title='Deep learning for medical diagnosis',abstract='Retrospective cohort of patients.'),
-            dict(pmid='2',doi='10.1/second',title='Deep learning for medical diagnosis',abstract='Retrospective cohort of patients.')])
+            dict(pmid='1',doi='10.1/first',title='Deep learning for medical diagnosis',abstract='Retrospective gastric cohort of gastric cancer patients.'),
+            dict(pmid='2',doi='10.1/second',title='Deep learning for medical diagnosis',abstract='Retrospective gastric cohort of gastric cancer patients.')])
         self.assertEqual(len(self.store.sql('SELECT * FROM wl_articles')),2)
-        p.ingest_articles(self.store,'run',[dict(pmid='2',doi='10.1/second',title='Deep learning for medical diagnosis',abstract='Retrospective cohort of patients.')])
+        p.ingest_articles(self.store,'run',[dict(pmid='2',doi='10.1/second',title='Deep learning for medical diagnosis',abstract='Retrospective gastric cohort of gastric cancer patients.')])
         self.assertEqual(len(self.store.sql('SELECT * FROM wl_articles')),2)
+
+    def test_digestive_pelvic_scope_is_not_generic_medical_ai(self):
+        for title in ('Gastric cancer surgery','Small bowel obstruction','Crohn disease',
+                      'Pelvic floor dyssynergia','Fecal incontinence','Functional constipation',
+                      'Esophageal achalasia','Pancreatic cancer','Liver fibrosis','Rectal prolapse'):
+            self.assertGreater(p.score({'title':title}),0,title)
+        for title in ('Deep learning for Parkinson disease','AI in acute myeloid leukemia',
+                      'Psychotic disorders and speech compression','Kidney stone federated learning'):
+            self.assertEqual(p.score({'title':title,'abstract':'External validation in 500 patients.'}),0,title)
+        self.assertEqual(p.score({'title':'Generic model architecture','abstract':'Potential colorectal applications.'}),0)
+        self.assertGreater(p.score({'title':'Constipation in Parkinson disease'}),0)
 
     def test_strong_identifier_conflict_is_not_silently_merged(self):
         p.ingest_articles(self.store,'run',[

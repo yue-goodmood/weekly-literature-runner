@@ -1,7 +1,8 @@
 # Weekly Literature
 
 Standalone deterministic retrieval, strict clinical triage, checkpointed recovery,
-and verified Notion delivery for colorectal surgery/cancer and clinical AI.
+and verified Notion delivery for digestive-system and related pelvic-floor diseases.
+AI is included only with direct disease-scope relevance, not as a cross-specialty feed.
 Python standard library only. No model API key or paid inference is required.
 AI medical review remains in the existing separately managed assistant task.
 
@@ -55,8 +56,11 @@ and success/failure of workflow runs are visible to everyone.
    group name across repositories does NOT prevent simultaneous writes.
 5. Enable the new production entry point. First run `scheduled`: it re-triages
    the oldest legacy READY queue before starting any new ETL, preserving saved
-   analyses. This step prunes only unanalysed out-of-scope candidate links;
-   metadata and source checkpoints are retained. Approve this operation before
+   analyses. Disease-scope correction deselects out-of-scope candidate links,
+   including previously analysed ones, with per-record audit receipts; source,
+   analysis and historical delivery records are retained. A new versioned Notion
+   index supersedes the broad-scope edition without overwriting it. Expanded
+   queries apply to new runs, not retroactively to old search windows. Approve this operation before
    the first production run.
 6. Verify through the private status API: strict policy, real selected/analyzed/
    pending progress, preserved analyses, source-specific coverage and windows.

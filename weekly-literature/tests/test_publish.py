@@ -36,6 +36,26 @@ class PublicationTest(unittest.TestCase):
         with self.assertRaises(ValueError):publish.publish(self.store,self.run)
         self.assertEqual(self.store.sql('SELECT * FROM wl_history'),[])
 
+    def test_scoped_final_promotes_api_pointer_and_preserves_legacy_ledger(self):
+        self.analysis()
+        self.store.sql('UPDATE wl_runs SET audit=?',(json.dumps({'triage':{'policy':pipeline.TRIAGE_POLICY}}),))
+        self.store.sql('INSERT INTO wl_history VALUES(?,?)',('historical-other-specialty',self.run))
+        def provision(store,artifact):
+            store.sql('INSERT INTO wl_publications(run_key,page_id) VALUES(?,?)',(artifact,'scoped-page'))
+            return 'scoped-page'
+        def verified(store,artifact,page,blocks,token):
+            store.sql("UPDATE wl_publications SET status='VERIFIED',content_hash='checked' WHERE run_key=?",(artifact,))
+        with patch.dict('os.environ',{'NOTION_TOKEN':'test','NOTION_DATA_SOURCE_ID':'db'}), \
+             patch.object(publish,'provision_page',side_effect=provision), \
+             patch.object(publish,'publish_report_blocks',side_effect=verified), \
+             patch.object(publish,'update_report_metadata'):
+            publish.publish(self.store,self.run)
+            publish.publish(self.store,self.run)
+        self.assertEqual(self.store.sql('SELECT page_id FROM wl_publications WHERE run_key=?',(self.run,))[0]['page_id'],'scoped-page')
+        self.assertEqual(self.store.sql('SELECT page_id FROM wl_publications WHERE run_key=?',('legacy:'+self.run+':pre-digestive-scope',))[0]['page_id'],'page')
+        self.assertEqual(self.store.sql('SELECT count(*) AS n FROM wl_history')[0]['n'],2)
+        self.assertEqual(self.store.sql('SELECT count(*) AS n FROM wl_analysis')[0]['n'],1)
+
     def test_missing_metadata_cannot_disappear_in_join(self):
         self.analysis()
         self.store.sql('DELETE FROM wl_articles')
@@ -190,6 +210,7 @@ class FinalVerificationTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError,'preserve user'):
                 publish.finalize_article_title('page','popscience:PMID:1','患者的问题')
             write.assert_not_called()
+
 
 
 

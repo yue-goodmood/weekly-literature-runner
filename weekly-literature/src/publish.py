@@ -104,7 +104,8 @@ def publish(store, run):
     if any(row['payload'] is None for row in rows):
         raise ValueError('Missing AI decisions; resume only outstanding candidates')
     audit = json.loads(state['audit'])
-    from partial_publish import cached, INDEX, has_unsynced, final_index
+    from partial_publish import cached, INDEX, has_unsynced, final_index, final_artifact
+    artifact=final_artifact(state)
     partial_entries = cached(store, run, INDEX, [])
     if partial_entries and has_unsynced(store, run):
         raise ValueError('Partial Notion delivery outstanding; resume batches before finalization')
@@ -115,10 +116,10 @@ def publish(store, run):
             'AND old.run_key<c.run_key AND old.selected=1) LIMIT 1', (run,)):
         raise ValueError('Unqueued eligible candidates; refuse final publication')
     store.sql("UPDATE wl_runs SET status='PUBLISHING' WHERE run_key=? AND status='READY'", (run,))
-    page = provision_page(store, run)
+    page = provision_page(store, artifact)
     recovery = store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit=?',
                          (run, 'recovery:unlimited-v1:publication-base'))
-    if recovery:
+    if recovery and artifact==run:
         base = json.loads(recovery[0]['payload'])
         prior = set(base['evidence_keys'])
         additional = [row for row in rows if row['evidence_key'] not in prior]
@@ -129,7 +130,7 @@ def publish(store, run):
         publish_report_blocks(store, run, page, blocks, os.environ['NOTION_TOKEN'], prefix=base['blocks'])
     else:
         blocks, included = (final_index(state, rows, partial_entries) if partial_entries else build_report(state, rows))
-        publish_report_blocks(store, run, page, blocks, os.environ['NOTION_TOKEN'])
+        publish_report_blocks(store, artifact, page, blocks, os.environ['NOTION_TOKEN'])
     failures=[]
     for row in rows:
         value=json.loads(row['payload'])
@@ -145,18 +146,26 @@ def publish(store, run):
     if failures:
         raise ValueError('Article publication incomplete: '+', '.join(failures))
     included_keys = {row['evidence_key'] for row in rows if json.loads(row['payload'])['decision']=='include'}
-    expected = {run} | {'popscience:'+row['evidence_key'] for row in rows
+    expected = {artifact} | {'popscience:'+row['evidence_key'] for row in rows
                         if json.loads(row['payload']).get('popscience_priority')=='high'}
     verify_artifacts(store,run,expected)
     store.batch([('INSERT OR IGNORE INTO wl_history VALUES(?,?)', (key,run)) for key in sorted(included_keys)])
     history = {row['evidence_key'] for row in store.sql('SELECT evidence_key FROM wl_history WHERE run_key=?', (run,))}
-    if history != included_keys:
+    if (history != included_keys if artifact==run else not included_keys.issubset(history)):
         raise ValueError('Published history differs from included decisions')
     # Only after independent body/hash/uniqueness verification may the card
     # receive its final title/date/count/status. Properties are read back too.
     update_report_metadata(run, page, included, audit,
                            os.environ['NOTION_TOKEN'], os.environ['NOTION_DATA_SOURCE_ID'])
-    store.sql("UPDATE wl_runs SET status='PUBLISHED' WHERE run_key=?", (run,))
+    if artifact!=run:
+        # The OAuth API addresses the logical run key. Atomically promote the
+        # independently verified scoped page while retaining the old ledger.
+        store.batch([
+            ('UPDATE wl_publications SET run_key=? WHERE run_key=?',('legacy:'+run+':pre-digestive-scope',run)),
+            ('UPDATE wl_publications SET run_key=? WHERE run_key=?',(run,artifact)),
+            ("UPDATE wl_runs SET status='PUBLISHED' WHERE run_key=?",(run,))])
+    else:
+        store.sql("UPDATE wl_runs SET status='PUBLISHED' WHERE run_key=?", (run,))
 
 def publish_text(store, artifact, page, text):
     content_hash = hashlib.sha256(text.encode()).hexdigest()

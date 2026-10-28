@@ -204,6 +204,12 @@ class BlockWriteTest(unittest.TestCase):
 
 
 class ChineseTitleTest(unittest.TestCase):
+    def test_digestive_categories_never_use_basic_as_fallback(self):
+        self.assertTrue(rf.digestive_category({'title':'Frailty and enhanced recovery after colorectal surgery'}).startswith('D.'))
+        self.assertTrue(rf.digestive_category({'title':'Deep learning for gastric cancer'}).startswith('F.'))
+        self.assertTrue(rf.digestive_category({'title':'Colorectal cancer molecular signaling pathway in mouse cells'}).startswith('G.'))
+        self.assertTrue(rf.digestive_category({'title':'Small bowel clinical cohort'}).startswith('H.'))
+
     def test_adoption_updates_only_presentation_receipts(self):
         import layout_upgrade as up
         import partial_publish as pp

@@ -1,31 +1,31 @@
 {
-  "version": "strict-clinical-v3",
+  "version": "digestive-pelvic-v1",
   "lookback_days": 14,
-  "triage_policy": "clinical-signal-v1",
+  "triage_policy": "digestive-pelvic-v1",
   "max_candidates": null,
   "max_deep_analysis": 10,
   "topics": [
-    "colorectal",
-    "medical_ai"
+    "digestive_pelvic",
+    "digestive_ai"
   ],
   "queries": {
-    "colorectal": "(Colorectal Neoplasms[MeSH Terms] OR colorectal[Title/Abstract] OR rectal[Title/Abstract] OR colectomy[Title/Abstract] OR proctectomy[Title/Abstract] OR \"colon cancer\"[Title/Abstract] OR \"colon surgery\"[Title/Abstract] OR \"anterior resection\"[Title/Abstract])",
-    "medical_ai": "((\"artificial intelligence\"[Title] OR \"machine learning\"[Title] OR \"deep learning\"[Title] OR radiomics[Title] OR \"large language model\"[Title/Abstract] OR \"large language models\"[Title/Abstract] OR \"generative AI\"[Title/Abstract] OR \"AI agent\"[Title/Abstract] OR \"foundation model\"[Title/Abstract]) AND (clinical[Title/Abstract] OR medical[Title/Abstract] OR patient[Title/Abstract] OR healthcare[Title/Abstract] OR surgery[Title/Abstract] OR diagnosis[Title/Abstract]))"
+    "digestive_pelvic": "(Esophageal Diseases[MeSH Terms] OR Gastrointestinal Diseases[MeSH Terms] OR Liver Diseases[MeSH Terms] OR Biliary Tract Diseases[MeSH Terms] OR Pancreatic Diseases[MeSH Terms] OR Pelvic Floor Disorders[MeSH Terms] OR colorectal[Title/Abstract] OR rectal[Title/Abstract] OR gastric[Title/Abstract] OR esophageal[Title/Abstract] OR oesophageal[Title/Abstract] OR \"small bowel\"[Title/Abstract] OR \"small intestine\"[Title/Abstract] OR \"pelvic floor\"[Title/Abstract] OR constipation[Title/Abstract] OR \"fecal incontinence\"[Title/Abstract])",
+    "digestive_ai": "((Esophageal Diseases[MeSH Terms] OR Gastrointestinal Diseases[MeSH Terms] OR Liver Diseases[MeSH Terms] OR Biliary Tract Diseases[MeSH Terms] OR Pancreatic Diseases[MeSH Terms] OR Pelvic Floor Disorders[MeSH Terms] OR colorectal[Title/Abstract] OR rectal[Title/Abstract] OR gastric[Title/Abstract] OR esophageal[Title/Abstract] OR oesophageal[Title/Abstract] OR \"small bowel\"[Title/Abstract] OR \"small intestine\"[Title/Abstract] OR \"pelvic floor\"[Title/Abstract] OR constipation[Title/Abstract] OR \"fecal incontinence\"[Title/Abstract]) AND (\"artificial intelligence\"[Title/Abstract] OR \"machine learning\"[Title/Abstract] OR \"deep learning\"[Title/Abstract] OR \"large language model\"[Title/Abstract] OR \"AI agent\"[Title/Abstract]))"
   },
   "supplementary_sources": {
     "Europe PMC": {
       "enabled": true,
       "max_pages": null,
       "queries": {
-        "colorectal": "TITLE_ABS:(colorectal OR rectal OR colectomy OR \"colon cancer\")",
-        "medical_ai": "TITLE_ABS:(\"large language model\" OR \"artificial intelligence\" OR \"machine learning\" OR \"deep learning\" OR \"AI agent\") AND TITLE_ABS:(clinical OR medical OR patient OR healthcare)"
+        "digestive_pelvic": "TITLE_ABS:(colorectal OR rectal OR gastric OR esophageal OR oesophageal OR gastrointestinal OR \"small bowel\" OR \"small intestine\" OR \"pelvic floor\" OR constipation OR \"fecal incontinence\" OR Crohn OR colitis OR liver OR hepatic OR biliary OR pancreatic)",
+        "digestive_ai": "TITLE_ABS:(colorectal OR rectal OR gastric OR esophageal OR oesophageal OR gastrointestinal OR \"small bowel\" OR \"small intestine\" OR \"pelvic floor\" OR constipation OR \"fecal incontinence\" OR Crohn OR colitis OR liver OR hepatic OR biliary OR pancreatic) AND TITLE_ABS:(\"artificial intelligence\" OR \"machine learning\" OR \"deep learning\" OR \"large language model\" OR \"AI agent\")"
       }
     },
     "arXiv": {
       "enabled": true,
       "max_pages": null,
       "queries": {
-        "medical_ai": "(all:clinical OR all:medical OR all:healthcare OR all:colorectal) AND (all:\"large language model\" OR all:\"machine learning\" OR all:\"deep learning\" OR all:\"AI agent\")"
+        "digestive_ai": "(ti:colorectal OR ti:rectal OR ti:gastric OR ti:esophageal OR ti:gastrointestinal OR ti:bowel OR ti:pelvic OR ti:liver OR ti:hepatic OR ti:pancreatic) AND (all:\"artificial intelligence\" OR all:\"machine learning\" OR all:\"deep learning\" OR all:\"large language model\" OR all:\"AI agent\")"
       }
     },
     "Crossref": {
@@ -36,6 +36,7 @@
     }
   }
 }
+
 
 
 
