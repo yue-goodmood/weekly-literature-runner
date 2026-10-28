@@ -35,6 +35,20 @@ def verify_artifacts(store, run, expected):
     if {row['artifact'] for row in verified} != expected:
         raise ValueError('Required report/article publication missing')
 
+def publish_draft(store, row):
+    """Deliver the same immutable medical-review draft in partial and final runs."""
+    value = json.loads(row['payload'])
+    if value.get('popscience_priority') != 'high':
+        return
+    draft = value.get('popscience_article')
+    if value['decision'] != 'include' or not draft or not draft.get('body') or not draft.get('references'):
+        raise ValueError('High priority article missing; do not mark run complete')
+    artifact = 'popscience:' + row['evidence_key']
+    target = provision_page(store, artifact, os.environ['NOTION_ARTICLE_DATA_SOURCE_ID'], review=True)
+    text = draft['title']+'\n\n'+draft['body']+'\n\n参考来源\n'+'\n'.join(draft['references'])+'\n\n证据键：'+row['evidence_key']+'\n医学审核：未审核；状态：待医学审核；润色状态：未润色'
+    publish_text(store, artifact, target, text)
+    finalize_article_title(target, artifact, draft['title'])
+
 def provision_page(store, run, data_source=None, review=False):
     """Reconcile a create intent before any retry of Notion's non-idempotent POST."""
     existing = store.sql('SELECT page_id FROM wl_publications WHERE run_key=?', (run,))
@@ -84,6 +98,10 @@ def publish(store, run):
     if any(row['payload'] is None for row in rows):
         raise ValueError('Missing AI decisions; resume only outstanding candidates')
     audit = json.loads(state['audit'])
+    from partial_publish import cached, INDEX, has_unsynced, final_index
+    partial_entries = cached(store, run, INDEX, [])
+    if partial_entries and has_unsynced(store, run):
+        raise ValueError('Partial Notion delivery outstanding; resume batches before finalization')
     if audit.get('review_policy') == 'unlimited-v1' and store.sql(
             'SELECT 1 FROM wl_candidates c WHERE c.run_key=? AND c.selected=0 '
             'AND NOT EXISTS (SELECT 1 FROM wl_history h WHERE h.evidence_key=c.evidence_key) '
@@ -98,13 +116,13 @@ def publish(store, run):
         base = json.loads(recovery[0]['payload'])
         prior = set(base['evidence_keys'])
         additional = [row for row in rows if row['evidence_key'] not in prior]
-        blocks, _ = build_report(state, additional)
+        blocks, _ = (final_index(state, rows, partial_entries) if partial_entries else build_report(state, additional))
         blocks.insert(0, _block('heading_1', '回溯补充：解除100条限制后的完整候选复核'))
         blocks.insert(1, _block('paragraph', '保留上方原始归档与审计；以下补入先前被顺延的文献。最新总数与覆盖状态以数据库属性及本次审计为准。'))
         included = sum(json.loads(row['payload'])['decision']=='include' for row in rows)
         publish_report_blocks(store, run, page, blocks, os.environ['NOTION_TOKEN'], prefix=base['blocks'])
     else:
-        blocks, included = build_report(state, rows)
+        blocks, included = (final_index(state, rows, partial_entries) if partial_entries else build_report(state, rows))
         publish_report_blocks(store, run, page, blocks, os.environ['NOTION_TOKEN'])
     failures=[]
     for row in rows:
@@ -115,11 +133,7 @@ def publish(store, run):
         if value['decision']!='include' or not draft or not draft.get('body') or not draft.get('references'):
             raise ValueError('High priority article missing; do not mark run complete')
         try:
-            artifact='popscience:'+row['evidence_key']
-            target=provision_page(store,artifact,os.environ['NOTION_ARTICLE_DATA_SOURCE_ID'],review=True)
-            text=draft['title']+'\n\n'+draft['body']+'\n\n参考来源\n'+'\n'.join(draft['references'])+'\n\n证据键：'+row['evidence_key']+'\n医学审核：未审核；状态：待医学审核；润色状态：未润色'
-            publish_text(store,artifact,target,text)
-            finalize_article_title(target,artifact,draft['title'])
+            publish_draft(store, row)
         except (ValueError, OSError, KeyError) as exc:
             failures.append(row['evidence_key']+':'+type(exc).__name__)
     if failures:
@@ -174,6 +188,7 @@ def publish_text(store, artifact, page, text):
 if __name__=='__main__':
     parser=argparse.ArgumentParser(); parser.add_argument('run_key'); args=parser.parse_args()
     publish(Store(),args.run_key)
+
 
 
 
