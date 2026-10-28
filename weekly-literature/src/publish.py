@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 from pipeline import Store, request
 from report_format import build_report, publish_report_blocks, update_report_metadata, _block
 
@@ -69,6 +70,11 @@ def provision_page(store, run, data_source=None, review=False):
         if store.sql('SELECT 1 FROM wl_page_intents WHERE run_key=?',(run,)):
             raise ValueError('Previous page create outcome unknown; reconcile Notion before retrying creation')
         body={'parent':{'type':'data_source_id','data_source_id':database},'properties':{title_prop:{'title':[{'text':{'content':run}}]}}}
+        if not review:
+            body['icon']={'type':'emoji','emoji':'📫'}
+            day=next((p for p in run.split(':') if re.fullmatch(r'\d{4}-\d{2}-\d{2}',p)),None)
+            if day and schema['properties'].get('执行日期',{}).get('type')=='date':
+                body['properties']['执行日期']={'date':{'start':day}}
         if review:
             for name,option in {'医学审核':'未审核','状态':'待医学审核','润色状态':'未润色'}.items():
                 definition=schema['properties'].get(name,{})
