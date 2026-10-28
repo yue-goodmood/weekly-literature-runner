@@ -1,5 +1,6 @@
 {
   "version": "digestive-pelvic-v1",
+  "backfill_existing_windows": false,
   "lookback_days": 14,
   "triage_policy": "digestive-pelvic-v1",
   "max_candidates": null,
