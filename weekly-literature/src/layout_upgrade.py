@@ -86,6 +86,8 @@ def block_text(block):
 
 def validate_title_translation(expected, current):
     """Only title translations are permitted; scientific text/links stay exact."""
+    if any(b.get('has_children') or _canonical(b)['type']=='unrecognized' for b in current):
+        raise ValueError('Nested or unsupported content; preserve page')
     originals={}; translations={}; stripped=[]
     for i,b in enumerate(expected):
         text=block_text(b)
