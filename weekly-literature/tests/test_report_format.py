@@ -286,6 +286,15 @@ class ChineseTitleTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'Non-title content changed'):
             self.validate(self.original,self.translated)
 
+    def test_rejects_markup_artifacts_and_nested_content(self):
+        self.sample()
+        self.translated[0]=rf._block('bulleted_list_item','直肠试验｜</b>RR1.2')
+        with self.assertRaisesRegex(ValueError,'Non-title content changed'):
+            self.validate(self.original,self.translated)
+        self.sample();self.translated[0]['has_children']=True
+        with self.assertRaisesRegex(ValueError,'Nested or unsupported content'):
+            self.validate(self.original,self.translated)
+
 
 class CardMetadataTest(unittest.TestCase):
     def test_updates_title_status_and_icon_without_raw_run_title(self):
