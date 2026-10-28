@@ -7,6 +7,7 @@ import hashlib
 import json
 import re
 import urllib.request
+import urllib.error
 
 from pipeline import request, TRIAGE_POLICY, BASIC_TERMS, AI_TERMS, in_scope
 
@@ -287,8 +288,18 @@ def publish_report_blocks(store, run, page, blocks, token, prefix=None):
         payload = {"children": blocks[offset:offset + 50]}
         req = urllib.request.Request(base, data=json.dumps(payload, ensure_ascii=False).encode(),
                                      headers=headers, method="PATCH")
-        with urllib.request.urlopen(req, timeout=60) as response:
-            response.read()
+        try:
+            with urllib.request.urlopen(req, timeout=60) as response:
+                response.read()
+        except urllib.error.HTTPError as exc:
+            # Expose only a schema path, never the API's quoted source content.
+            if exc.code==400:
+                try:
+                    message=json.loads(exc.read()).get('message','')
+                    field=re.search(r'\bbody(?:\.[a-z_]+|\[\d+\])+',message)
+                    if field: exc.safe_field=field[0]
+                except (ValueError,AttributeError): pass
+            raise
     if read() != expected:
         raise ValueError("Notion native block readback mismatch")
     store.sql("UPDATE wl_publications SET status='VERIFIED',content_hash=? WHERE run_key=?",

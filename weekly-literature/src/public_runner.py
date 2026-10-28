@@ -116,6 +116,16 @@ def execute(mode, store=None, today=None):
             if mode!='publish':
                 return 'RETRIAGED'  # No new ETL during a recovery pass.
     if mode in ('etl', 'scheduled'):
+        from backfill import needed, resume
+        config=json.loads((ROOT/'config/topics.json').read_text())
+        for state in store.sql("SELECT * FROM wl_runs WHERE status='READY' ORDER BY run_key"):
+            if config.get('backfill_existing_windows') and needed(state):
+                try:
+                    resume(store,state['run_key'],config,PubMed(),
+                           {'Europe PMC':EuropePMC(request),'arXiv':Arxiv(request)})
+                except Exception as exc:
+                    raise PhaseError('BACKFILL',exc) from None
+                return 'BACKFILL_COMPLETED'
         config = json.loads((ROOT/'config/topics.json').read_text())
         date, config = etl_target(store, today, config)
         existing = store.sql('SELECT status FROM wl_runs WHERE run_key=?',
@@ -130,6 +140,16 @@ def execute(mode, store=None, today=None):
             except Exception as exc:
                 raise PhaseError('ETL', exc) from None
     if mode in ('publish', 'scheduled'):
+        from backfill import needed, resume
+        config=json.loads((ROOT/'config/topics.json').read_text())
+        for state in store.sql("SELECT * FROM wl_runs WHERE status='READY' ORDER BY run_key"):
+            if config.get('backfill_existing_windows') and needed(state):
+                try:
+                    resume(store,state['run_key'],config,PubMed(),
+                           {'Europe PMC':EuropePMC(request),'arXiv':Arxiv(request)})
+                except Exception as exc:
+                    raise PhaseError('BACKFILL',exc) from None
+                return 'BACKFILL_COMPLETED'
         rows = store.sql(f"""
             SELECT r.run_key,r.audit,r.status,
               (SELECT count(*) FROM wl_candidates c WHERE c.run_key=r.run_key AND c.selected=1) AS selected,
@@ -182,7 +202,7 @@ def safe_main(mode, worker=execute):
         allowed = {'DISABLED', 'READY', 'RETRIAGED', 'ETL_CHECKPOINTED',
                    'PUBLICATION_VERIFIED', 'AWAITING_REVIEW', 'NO_PENDING_PUBLICATION',
                    'PARTIAL_SYNC_VERIFIED',
-                   'NO_PENDING_ETL'}
+                   'NO_PENDING_ETL','BACKFILL_COMPLETED'}
         if status not in allowed:
             raise ConfigurationError()
         print('weekly-literature: '+status)
@@ -210,6 +230,13 @@ def safe_main(mode, worker=execute):
                 label = 'D1_DAILY_QUOTA_EXCEEDED'
             elif isinstance(exc.cause, urllib.error.HTTPError):
                 label = exc.phase+'_HTTP_'+str(exc.cause.code)
+                import re
+                field=getattr(exc.cause,'safe_field','')
+                if re.fullmatch(r'body(?:\.[a-z_]+|\[\d+\])+',field): label+='_'+field
+                service=getattr(exc.cause,'safe_service','')
+                reason=getattr(exc.cause,'safe_reason','')
+                if service in ('NOTION','D1','UPSTREAM'): label+='_'+service
+                if reason in ('VALIDATION_ERROR','INVALID_JSON','INVALID_REQUEST_URL','MISSING_VERSION','TOO_MANY_SQL_VARIABLES'): label+='_'+reason
             else:
                 label = exc.phase+'_'+diagnostic(exc.cause)
         else:

@@ -125,12 +125,24 @@ def request(url, data=None, headers=None):
                 return response.read()
         except urllib.error.HTTPError as exc:
             parsed = urllib.parse.urlparse(url)
+            exc.safe_service={'api.notion.com':'NOTION','api.cloudflare.com':'D1'}.get(parsed.hostname,'UPSTREAM')
+            detail=''
             if parsed.hostname == 'api.cloudflare.com' and '/d1/database/' in parsed.path:
                 # D1 can report its daily quota as a non-2xx HTTP response.
                 # Never retry this response even when the status is 429/5xx.
                 detail = exc.read(16384).decode('utf-8', errors='replace')
                 if d1_daily_quota(detail):
                     raise RuntimeError('D1_DAILY_QUOTA_EXCEEDED') from None
+            if exc.code==400:
+                try:
+                    value=json.loads(detail or exc.read(16384))
+                    message=value.get('message','')
+                    field=re.search(r'\bbody(?:\.[a-z_]+|\[\d+\])+',message)
+                    if field: exc.safe_field=field[0]
+                    if value.get('code') in ('validation_error','invalid_json','invalid_request_url','missing_version'):
+                        exc.safe_reason=value['code'].upper()
+                    if 'too many sql variables' in str(value).lower(): exc.safe_reason='TOO_MANY_SQL_VARIABLES'
+                except (ValueError,AttributeError): pass
             if exc.code not in (429, 500, 502, 503, 504) or attempt == 2:
                 raise
             time.sleep(retry_delay(exc.headers, attempt))
