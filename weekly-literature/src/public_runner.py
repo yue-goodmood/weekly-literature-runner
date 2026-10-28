@@ -33,6 +33,9 @@ class PhaseError(Exception):
 
 def diagnostic(cause):
     # Match fixed code-owned prefixes only; never expose upstream error text.
+    import re
+    if isinstance(cause, ValueError) and re.fullmatch(r'Non-title content changed; preserve page: \d+ (text|links|type|icon)',str(cause)):
+        return 'DISPLAY_DIFFERENCE_'+str(cause).rsplit(': ',1)[1].upper().replace(' ','_')
     prefixes = (
         ('Conflicting identifier aliases', 'IDENTIFIER_CONFLICT'),
         ('Metadata already used in an analysis', 'METADATA_RECONCILIATION_REQUIRED'),

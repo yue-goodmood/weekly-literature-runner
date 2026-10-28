@@ -113,7 +113,7 @@ def validate_title_translation(expected, current):
             continue
         actual.append(b)
     if len(stripped)!=len(actual): raise ValueError('Non-title blocks changed')
-    for old,new in zip(stripped,actual):
+    for index,(old,new) in enumerate(zip(stripped,actual)):
         wanted=semantic(old); text=block_text(old)
         if old['type']=='heading_2':
             number,original=text.split('. ',1)
@@ -126,7 +126,12 @@ def validate_title_translation(expected, current):
                 if any(link for _,link in wanted.get('content',[])):
                     raise ValueError('Title line contains unexpected link')
                 wanted['content']=[[(match[1] or '')+translations[match[2]]+'｜'+suffix,None]]
-        if wanted!=semantic(new): raise ValueError('Non-title content changed; preserve page')
+        received=semantic(new)
+        if wanted!=received:
+            reason=('type' if wanted.get('type')!=received.get('type') else
+                    'text' if ''.join(x[0] for x in wanted.get('content',[]))!=''.join(x[0] for x in received.get('content',[])) else
+                    'links' if wanted.get('content')!=received.get('content') else 'icon')
+            raise ValueError('Non-title content changed; preserve page: '+str(index)+' '+reason)
     return translations
 
 
