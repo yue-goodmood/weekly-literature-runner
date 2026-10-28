@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from pipeline import (ROOT, Store, PubMed, TRIAGE_POLICY, digest, request, run_etl,
                       work_budget, WorkBudgetReached, UpstreamDeferred, DatabaseBudgetReached)
 from publish import publish
-from partial_publish import sync_partial, finish_progress, has_unsynced
+from partial_publish import sync_partial, finish_progress, has_unsynced, INDEX
 from retune_queue import retune
 from supplements import EuropePMC, Arxiv
 
@@ -107,10 +107,11 @@ def execute(mode, store=None, today=None):
     store.migrate()
     # Repair oldest legacy queue BEFORE spending quota on a new retrieval run.
     for row in (store.sql("SELECT run_key,audit FROM wl_runs WHERE status='READY' ORDER BY run_key")
-                if mode in ('etl','scheduled') else []):
+                if mode in ('etl','scheduled','publish') else []):
         if not strict(json.loads(row['audit'])):
             retune(store, row['run_key'])
-            return 'RETRIAGED'  # One bounded recovery task; no new ETL this pass.
+            if mode!='publish':
+                return 'RETRIAGED'  # No new ETL during a recovery pass.
     if mode in ('etl', 'scheduled'):
         config = json.loads((ROOT/'config/topics.json').read_text())
         date, config = etl_target(store, today, config)
@@ -126,7 +127,7 @@ def execute(mode, store=None, today=None):
             except Exception as exc:
                 raise PhaseError('ETL', exc) from None
     if mode in ('publish', 'scheduled'):
-        rows = store.sql("""
+        rows = store.sql(f"""
             SELECT r.run_key,r.audit,r.status,
               (SELECT count(*) FROM wl_candidates c WHERE c.run_key=r.run_key AND c.selected=1) AS selected,
               (SELECT count(*) FROM wl_analysis a JOIN wl_candidates c
@@ -134,7 +135,7 @@ def execute(mode, store=None, today=None):
                  WHERE c.run_key=r.run_key AND c.selected=1) AS analyzed
             FROM wl_runs r WHERE r.status IN ('READY','PUBLISHING') OR
               (r.status='PUBLISHED' AND EXISTS (SELECT 1 FROM wl_checkpoints p
-                WHERE p.run_key=r.run_key AND p.unit='notion:partial:index:v1')
+                WHERE p.run_key=r.run_key AND p.unit='{INDEX}')
                AND NOT EXISTS (SELECT 1 FROM wl_checkpoints p WHERE p.run_key=r.run_key
                 AND p.unit='notion:partial:finished:v1')) ORDER BY r.run_key
         """)
@@ -146,17 +147,8 @@ def execute(mode, store=None, today=None):
                     finish_progress(store, row['run_key'])
                     return 'PUBLICATION_VERIFIED'
                 progress = {k: row[k] for k in ('selected','analyzed')}
-                from partial_publish import cached, INDEX
-                from layout_upgrade import restyle_batch, upgrade_progress, adopt_title_translations
+                from partial_publish import cached
                 entries = cached(store, row['run_key'], INDEX, [])
-                if entries:
-                    upgrade_progress(store, row['run_key'], entries)
-                for entry in entries:
-                    try:
-                        adopt_title_translations(store, row['run_key'], entry)
-                        restyle_batch(store, 'partial:'+row['run_key']+':'+str(entry['number']))
-                    except Exception as exc:
-                        raise PhaseError('PRESENTATION_BATCH_'+str(int(entry['number'])), exc) from None
                 changed = False
                 for _ in range(4):
                     if not sync_partial(store, row['run_key'], progress):

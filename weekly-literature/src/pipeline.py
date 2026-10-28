@@ -19,7 +19,7 @@ from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parents[1]
-TRIAGE_POLICY = 'clinical-signal-v1'
+TRIAGE_POLICY = 'digestive-pelvic-v1'
 DEADLINE = contextvars.ContextVar('literature_deadline', default=None)
 
 class WorkBudgetReached(Exception):
@@ -81,6 +81,34 @@ COLORECTAL_TERMS = re.compile(
     r'colon (?:cancer|tumou?r|neoplasm|surgery|resection)|low anterior resection|'
     r'total mesorectal|natural orifice specimen|\bnoses\b|low anterior resection syndrome|'
     r'结直肠|直肠|结肠', re.I)
+
+DIGESTIVE_TERMS = re.compile(
+    r'\b(?:colorectal|rectal|rectum|colon|colectomy|proctectomy|gastric|stomach|'
+    r'oesophag\w*|esophag\w*|gastrointestin\w*|gastroenter\w*|intestin\w*|bowel|'
+    r'duoden\w*|jejunu\w*|jejunal|ileum|ileal|ileitis|colitis|crohn\w*|celiac|coeliac|'
+    r'anorectal|anal|anus|haemorrhoid\w*|hemorrhoid\w*|defecat\w*|constipat\w*|'
+    r'fecal|faecal|rectocele|enteroc\w*|pelvic[- ]floor|liver|hepat\w*|pancrea\w*|'
+    r'biliary|gallbladder|cholang\w*|cholecyst\w*|appendic\w*|appendix|'
+    r'achalasia|gastroparesis|diverticul\w*)\b|'
+    r'食管|食道|胃癌|胃炎|胃肠|小肠|十二指肠|空肠|回肠|结直肠|结肠|直肠|肛门|'
+    r'盆底|便秘|排便|粪便失禁|炎症性肠病|克罗恩|肝癌|肝炎|肝胆|胆囊|胆管|胰腺', re.I)
+OTHER_PRIMARY_DISEASE = re.compile(
+    r'parkinson|leuk[ae]mia|schizophren|psychosis|psychotic|renal stones?|kidney stones?|'
+    r'breast cancer|glaucoma|melanoma|atrial fibrillation|ischemic stroke|ischaemic stroke', re.I)
+BASIC_TERMS = re.compile(r'mechanis|molecular|signaling|signalling|pathway|organoid|'
+    r'in vitro|cell lines?|xenograft|murine|mouse|mice|biosynth|microenvironment|机制|通路|类器官|细胞|小鼠',re.I)
+
+
+def in_scope(article):
+    """Require direct digestive/pelvic relevance, never just the medical-AI label."""
+    article=safe_metadata(article)
+    title=str(article.get('title') or '')
+    abstract=str(article.get('abstract') or '')
+    if DIGESTIVE_TERMS.search(title): return True
+    if OTHER_PRIMARY_DISEASE.search(title): return False
+    # Allow generic mechanism titles only with repeated, explicit GI context.
+    # A single incidental mention in an introduction is not sufficient.
+    return len(DIGESTIVE_TERMS.findall(abstract)) >= 2
 
 def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -252,10 +280,7 @@ def score(article):
     colorectal = bool(COLORECTAL_TERMS.search(text))
     if 'Retracted Publication' in article.get('types', []):
         return 0
-    clinical_ai = (bool(AI_TERMS.search(title)) and
-                   bool(MEDICAL_TITLE_TERMS.search(title)) and
-                   bool(CLINICAL_EVIDENCE_TERMS.search(text)))
-    if not (colorectal or clinical_ai):
+    if not in_scope(article):
         return 0
     return ((50 if colorectal else 30) +
             10 * bool(re.search(r'randomized|systematic review|meta-analys|guideline|consensus|'
@@ -456,7 +481,10 @@ def run_etl(store, source, config, run_date, supplements=None):
     supplementary_audit = run_supplements(store, key, config, run, supplements or {})
     # Carry unselected backlog only. Previously selected papers belong to their
     # original run and must not silently be counted in a newer weekly report.
-    store.sql('INSERT OR IGNORE INTO wl_candidates SELECT ?,c.evidence_key,max(c.score),0 FROM wl_candidates c LEFT JOIN wl_history h USING(evidence_key) WHERE c.run_key<? AND c.selected=0 AND h.evidence_key IS NULL GROUP BY c.evidence_key', (key,key))
+    store.sql('INSERT OR IGNORE INTO wl_candidates SELECT ?,c.evidence_key,max(c.score),0 FROM wl_candidates c '
+        'LEFT JOIN wl_history h USING(evidence_key) WHERE c.run_key<? AND c.selected=0 AND h.evidence_key IS NULL '
+        'AND NOT EXISTS (SELECT 1 FROM wl_checkpoints p WHERE p.run_key=c.run_key AND p.unit=?||c.evidence_key) '
+        'GROUP BY c.evidence_key',(key,key,'scope:'+TRIAGE_POLICY+':excluded:'))
     counts = select_candidates(store, key, config['max_candidates'])
     audit = dict(raw_hits=raw_hits, unique_pmids=len(ids), metadata_success=len(ids), **counts,
                  deferred=counts['eligible']-counts['selected'], supplementary_sources=supplementary_audit)
@@ -466,6 +494,8 @@ def run_etl(store, source, config, run_date, supplements=None):
     if config['max_candidates'] is None:
         audit['review_policy'] = 'clinical-signal-unlimited-v1'
         audit['triage'] = {'policy': TRIAGE_POLICY}
+        audit['scope'] = {'policy':TRIAGE_POLICY,'coverage':
+            'configured_digestive_queries' if config.get('triage_policy')==TRIAGE_POLICY else 'legacy_frozen_queries'}
         audit['reserved_or_historical'] = audit['deferred']
         audit['deferred'] = 0
     store.sql("UPDATE wl_runs SET status='READY',audit=? WHERE run_key=?", (json.dumps(audit), key))
@@ -477,9 +507,10 @@ def select_candidates(store, key, cap):
         # Unlimited review still uses ten-item MCP pages and durable decisions.
         # Preserve existing selections, including previously excluded papers.
         store.sql('UPDATE wl_candidates AS c SET selected=1 WHERE run_key=? AND selected=0 '
+                  'AND NOT EXISTS (SELECT 1 FROM wl_checkpoints p WHERE p.run_key=c.run_key AND p.unit=?||c.evidence_key) '
                   'AND NOT EXISTS (SELECT 1 FROM wl_candidates old WHERE old.evidence_key=c.evidence_key '
                   'AND old.run_key<c.run_key AND old.selected=1) '
-                  'AND NOT EXISTS (SELECT 1 FROM wl_history h WHERE h.evidence_key=c.evidence_key)', (key,))
+                  'AND NOT EXISTS (SELECT 1 FROM wl_history h WHERE h.evidence_key=c.evidence_key)', (key,'scope:'+TRIAGE_POLICY+':excluded:'))
         return store.sql('SELECT count(*) AS eligible,coalesce(sum(selected),0) AS selected FROM wl_candidates WHERE run_key=?', (key,))[0]
     # Colorectal starts at 50 and clinically evaluated medical-AI below 50.
     ai_cap = int(cap * .4)

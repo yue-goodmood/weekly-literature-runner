@@ -9,7 +9,13 @@ from report_format import _canonical, REPORT_STYLE_VERSION
 def verify(store, run):
     headers={'Authorization':'Bearer '+os.environ['NOTION_TOKEN'],'Notion-Version':'2025-09-03','Content-Type':'application/json'}
     root='https://api.notion.com/v1'
-    publications=store.sql('SELECT * FROM wl_publications WHERE run_key=? OR run_key IN (SELECT \'popscience:\'||evidence_key FROM wl_analysis WHERE run_key=?)',(run,run))
+    from partial_publish import final_artifact
+    state=store.sql('SELECT * FROM wl_runs WHERE run_key=?',(run,))[0]
+    publications=store.sql('SELECT * FROM wl_publications WHERE run_key=? OR run_key IN '
+        '(SELECT \'popscience:\'||a.evidence_key FROM wl_analysis a JOIN wl_candidates c '
+        'ON c.run_key=a.run_key AND c.evidence_key=a.evidence_key '
+        'WHERE a.run_key=? AND c.selected=1 AND json_extract(a.payload,\'$.decision\')=\'include\' '
+        'AND json_extract(a.payload,\'$.popscience_priority\')=\'high\')',(final_artifact(state),run))
     result=[]
     for row in publications:
         page=json.loads(request(root+'/pages/'+row['page_id'],headers=headers))
@@ -67,5 +73,6 @@ def main():
     print(json.dumps({'run_key':run,'status':state['status'],'analysed':len(rows),'included':len(included),'excluded':len(rows)-len(included),'history_verified':len(history),'repeat_verified':True,'artifacts':first,'audit':json.loads(state['audit'])},ensure_ascii=False))
 
 if __name__=='__main__':main()
+
 
 

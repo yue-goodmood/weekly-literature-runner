@@ -8,7 +8,7 @@ import json
 import re
 import urllib.request
 
-from pipeline import request
+from pipeline import request, TRIAGE_POLICY, BASIC_TERMS, AI_TERMS, in_scope
 
 REPORT_STYLE_VERSION = "2026-10-14-v1"
 GROUPS = (
@@ -95,6 +95,26 @@ def _category(article):
     return FALLBACK
 
 
+def digestive_category(article):
+    text=str(article.get('title') or '')+' '+str(article.get('abstract') or '')
+    if AI_TERMS.search(text): return 'F. 消化系统与盆底疾病相关AI'
+    if re.search(r'enhanced recovery|eras\b|frailty|fecal incontinence|pelvic.floor|constipation|康复|盆底|便秘',text,re.I):
+        return 'D. 消化系统术后功能、康复与盆底疾病'
+    for name,pattern in GROUPS:
+        if re.search(pattern,text,re.I): return name.replace('结直肠外科','消化系统外科')
+    if re.search(r'endoscop|esd\b|emr\b|colonoscopy|gastroscopy|内镜',text,re.I):
+        return 'C. 消化系统内镜、外科与围术期'
+    if re.search(r'clinical trial|randomi[sz]|prospective|retrospective|cohort|临床试验|队列',text,re.I):
+        return 'H. 其他消化系统与盆底临床研究'
+    if BASIC_TERMS.search(text): return 'G. 消化系统疾病基础与转化研究'
+    return 'H. 其他消化系统与盆底临床研究'
+
+
+def display_title(article,analysis):
+    match=re.search(r'^中文题名[：:]\s*(.+)$',str(analysis.get('summary') or ''),re.M)
+    return str(article.get('display_title_zh') or (match[1] if match else '') or article.get('title') or '无题')
+
+
 def _excerpt(summary):
     """One complete sentence copied from the saved analysis, no new claims."""
     source = str(summary or "").strip()
@@ -139,7 +159,7 @@ def build_report(state, rows):
     if papers:
         para("以下为已完成分析文献的阅读要点（直接节选已有分析，不额外推断研究结论）；完整结果及局限见各专题。")
         for row in papers[:5]:
-            bullet(row["article"].get("title", "无题") + "｜" + _excerpt(row["analysis"].get("summary")) +
+            bullet(display_title(row["article"],row["analysis"]) + "｜" + _excerpt(row["analysis"].get("summary")) +
                    "（" + row["key"] + "）")
     else:
         para("本批已完成审核，但没有达到纳入标准的文献。")
@@ -158,8 +178,10 @@ def build_report(state, rows):
 
     grouped = {name: [] for name, _ in GROUPS}
     grouped[FALLBACK] = []
+    scoped=audit.get('triage',{}).get('policy')==TRIAGE_POLICY
     for p in papers:
-        grouped[_category(p["article"])].append(p)
+        category=digestive_category(p['article']) if scoped else _category(p['article'])
+        grouped.setdefault(category,[]).append(p)
     rank = 0
     for name, group in grouped.items():
         if not group:
@@ -169,7 +191,7 @@ def build_report(state, rows):
             rank += 1
             a = item["article"]
             v = item["analysis"]
-            head(str(rank) + ". " + str(a.get("title") or item["key"]), 2)
+            head(str(rank) + ". " + display_title(a,v), 2)
             bullet("英文原题：" + str(a.get("title") or "未报告"))
             page.append({"object": "block", "type": "bulleted_list_item",
                          "bulleted_list_item": {"rich_text": _source_parts(a, item["key"])}})
@@ -184,7 +206,7 @@ def build_report(state, rows):
     if candidates:
         for p in candidates[:8]:
             bullet("[" + str(p["analysis"].get("popscience_priority", "low")).upper() + "] " +
-                   str(p["article"].get("title") or p["key"]) + "｜" +
+                   display_title(p["article"],p['analysis']) + "｜" +
                    str(p["analysis"].get("popscience") or "需医学审核") + "（" + p["key"] + "）")
     else:
         para("本批无已纳入论文可供推荐。")
