@@ -2,8 +2,10 @@
 import hashlib
 import json
 import os
+import time
+import urllib.error
 import urllib.request
-from pipeline import request
+from pipeline import request, check_budget, retry_delay
 from report_format import _canonical, format_blocks, REPORT_STYLE_VERSION
 
 
@@ -28,9 +30,18 @@ def read(page):
 
 
 def patch(url, body):
-    req=urllib.request.Request(url,data=json.dumps(body,ensure_ascii=False).encode(),headers=headers(),method='PATCH')
-    with urllib.request.urlopen(req,timeout=60) as response:
-        response.read()  # Reconcile writes by readback, never blind append retries.
+    for attempt in range(3):
+        check_budget(0.4)
+        time.sleep(0.4)  # Stay below Notion's average request allowance.
+        req=urllib.request.Request(url,data=json.dumps(body,ensure_ascii=False).encode(),headers=headers(),method='PATCH')
+        try:
+            with urllib.request.urlopen(req,timeout=60) as response:
+                response.read()
+            return
+        except urllib.error.HTTPError as exc:
+            if exc.code!=429 or attempt==2: raise
+            time.sleep(retry_delay(exc.headers,attempt))
+        # Ambiguous failures never retry an append. Resume via exact readback.
 
 
 def native(block):
