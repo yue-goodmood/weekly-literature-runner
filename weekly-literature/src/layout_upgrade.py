@@ -131,6 +131,11 @@ def validate_title_translation(expected, current):
             reason=('type' if wanted.get('type')!=received.get('type') else
                     'text' if ''.join(x[0] for x in wanted.get('content',[]))!=''.join(x[0] for x in received.get('content',[])) else
                     'links' if wanted.get('content')!=received.get('content') else 'icon')
+            if reason=='text' and '｜' in text and old['type']=='bulleted_list_item':
+                target=''.join(x[0] for x in wanted.get('content',[]))
+                value=block_text(new)
+                reason=('suffix' if target.split('｜',1)[-1]!=value.split('｜',1)[-1] else
+                        'translatedtitle' if match and match[2] in translations else 'unmatchedtitle')
             raise ValueError('Non-title content changed; preserve page: '+str(index)+' '+reason)
     return translations
 
