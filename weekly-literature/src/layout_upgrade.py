@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -65,6 +66,112 @@ def native(block):
 
 def checkpoint(store, artifact, unit, value):
     store.sql('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',(artifact,unit,json.dumps(value)))
+
+
+def semantic(block):
+    """Ignore text segmentation, but retain every character and linked span."""
+    value=_canonical(block)
+    spans=[]
+    for text,link in value.get('content',[]):
+        if not text: continue
+        if spans and spans[-1][1]==link: spans[-1][0]+=text
+        else: spans.append([text,link])
+    if 'content' in value: value['content']=spans
+    return value
+
+
+def block_text(block):
+    return ''.join(x[0] for x in _canonical(block).get('content',[]))
+
+
+def validate_title_translation(expected, current):
+    """Only title translations are permitted; scientific text/links stay exact."""
+    originals={}; translations={}; stripped=[]
+    for i,b in enumerate(expected):
+        text=block_text(b)
+        if b['type']=='heading_2':
+            match=re.fullmatch(r'(\d+)\. (.+)',text)
+            if not match: raise ValueError('Unrecognized paper heading')
+            originals[match[1]]=match[2]
+        if b['type']=='bulleted_list_item' and text.startswith('英文原题：'): continue
+        stripped.append(b)
+    actual=[]
+    for i,b in enumerate(current):
+        text=block_text(b)
+        if b['type']=='heading_2':
+            match=re.fullmatch(r'(\d+)\. (.+)',text)
+            if not match or match[1] not in originals or not re.search(r'[\u3400-\u9fff]',match[2]):
+                raise ValueError('Missing Chinese title binding')
+            original=originals[match[1]]
+            if i+1>=len(current) or current[i+1]['type']!='bulleted_list_item' or block_text(current[i+1]) not in ('英文原题：'+original,'英文原题： '+original):
+                raise ValueError('Original title binding changed')
+            if original in translations and translations[original]!=match[2]:
+                raise ValueError('Conflicting title translations')
+            translations[original]=match[2]
+        if b['type']=='bulleted_list_item' and text.startswith('英文原题：'):
+            if i==0 or current[i-1]['type']!='heading_2': raise ValueError('Unexpected original title row')
+            continue
+        actual.append(b)
+    if len(stripped)!=len(actual): raise ValueError('Non-title blocks changed')
+    for old,new in zip(stripped,actual):
+        wanted=semantic(old); text=block_text(old)
+        if old['type']=='heading_2':
+            number,original=text.split('. ',1)
+            if original not in translations: raise ValueError('Translation missing')
+            wanted['content']=[[number+'. '+translations[original],None]]
+        elif old['type']=='bulleted_list_item' and '｜' in text:
+            prefix,suffix=text.split('｜',1)
+            match=re.fullmatch(r'(\[[A-Z]+\] )?(.+)',prefix)
+            if match and match[2] in translations:
+                if any(link for _,link in wanted.get('content',[])):
+                    raise ValueError('Title line contains unexpected link')
+                wanted['content']=[[(match[1] or '')+translations[match[2]]+'｜'+suffix,None]]
+        if wanted!=semantic(new): raise ValueError('Non-title content changed; preserve page')
+    return translations
+
+
+def adopt_title_translations(store, run, entry):
+    """Reconcile authorized display-only edits without rewriting source evidence."""
+    from partial_publish import cached, SHOWN
+    from report_format import build_report, _block
+    artifact='partial:'+run+':'+str(entry['number']); unit='layout:chinese-titles:v1'
+    if cached(store,artifact,unit,None): return
+    publication=store.sql('SELECT * FROM wl_publications WHERE run_key=?',(artifact,))[0]
+    current=read(publication['page_id'])
+    actual_hash=fingerprint([_canonical(b) for b in current])
+    if publication['status']!='VERIFIED': raise ValueError('Translation requires verified batch')
+    if actual_hash==publication['content_hash']:
+        checkpoint(store,artifact,unit,{'done':True}); return
+    rows=store.sql(
+        'SELECT c.evidence_key,n.payload,a.payload AS article FROM wl_candidates c '
+        'JOIN wl_analysis n ON n.run_key=c.run_key AND n.evidence_key=c.evidence_key '
+        'JOIN wl_articles a ON a.evidence_key=c.evidence_key '
+        'JOIN wl_checkpoints p ON p.run_key=c.run_key AND p.unit=?||c.evidence_key '
+        'WHERE c.run_key=? AND c.selected=1 AND p.payload=? ORDER BY c.evidence_key',
+        (SHOWN,run,artifact))
+    if len(rows)!=entry['count']: raise ValueError('Translation batch receipt mismatch')
+    state=store.sql('SELECT * FROM wl_runs WHERE run_key=?',(run,))[0]
+    blocks,included=build_report(state,rows)
+    blocks[0]=_block('callout','处理中｜分批同步，不是最终周报。本批复核'+str(len(rows))+
+        '篇、纳入'+str(included)+'篇。摘要分析，待专业审阅。',icon={'type':'emoji','emoji':'📚'})
+    blocks[-2]=_block('paragraph','本批送达仅代表上述分析已读回核验，运行仍在处理中；来源覆盖和医学审核均不因此完成。')
+    blocks=format_blocks(blocks)
+    # The previous renderer lacked original-title rows and used the older label.
+    import copy
+    legacy=[]
+    for block in copy.deepcopy(blocks):
+        if block['type']=='bulleted_list_item':
+            if block_text(block).startswith('英文原题：'): continue
+            for item in block[block['type']]['rich_text']:
+                item['text']['content']=item['text']['content'].replace('科普候选／证据边界：','科普候选与证据边界：')
+        legacy.append(block)
+    expected=next((b for b in (blocks,legacy) if fingerprint([_canonical(x) for x in b])==publication['content_hash']),None)
+    if expected is None: raise ValueError('Cannot reconstruct verified pre-translation batch')
+    translations=validate_title_translation(expected,current)
+    store.batch([
+        ('UPDATE wl_publications SET content_hash=? WHERE run_key=?',(actual_hash,artifact)),
+        ('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',
+         (artifact,unit,json.dumps({'done':True,'translations':translations},ensure_ascii=False)))])
 
 
 def restyle_batch(store, artifact):

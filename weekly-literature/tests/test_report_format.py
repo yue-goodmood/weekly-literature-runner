@@ -203,6 +203,47 @@ class BlockWriteTest(unittest.TestCase):
                 rf.publish_report_blocks(self.store,"run","page",[rf._block("paragraph","changed")],"token")
 
 
+class ChineseTitleTest(unittest.TestCase):
+    def sample(self):
+        from layout_upgrade import validate_title_translation
+        self.validate=validate_title_translation
+        self.original=[rf._block('bulleted_list_item','Rectal trial｜RR1.2'),
+            rf._block('heading_2','1. Rectal trial'),
+            rf._block('bulleted_list_item','研究解读：RR1.2'),
+            rf._block('bulleted_list_item','[LOW] Rectal trial｜边界不变')]
+        self.translated=[rf._block('bulleted_list_item','直肠试验｜RR1.2'),
+            rf._block('heading_2','1. 直肠试验'),
+            rf._block('bulleted_list_item','英文原题： Rectal trial'),
+            rf._block('bulleted_list_item','研究解读：RR1.2'),
+            rf._block('bulleted_list_item','[LOW] 直肠试验｜边界不变')]
+
+    def test_accepts_only_bound_title_translation(self):
+        self.sample()
+        self.assertEqual(self.validate(self.original,self.translated),{'Rectal trial':'直肠试验'})
+
+    def test_rejects_changed_result(self):
+        self.sample()
+        self.translated[3]=rf._block('bulleted_list_item','研究解读：RR1.3')
+        with self.assertRaisesRegex(ValueError,'Non-title content changed'):
+            self.validate(self.original,self.translated)
+
+    def test_rejects_wrong_or_missing_original(self):
+        self.sample()
+        self.translated[2]=rf._block('bulleted_list_item','英文原题： Other trial')
+        with self.assertRaisesRegex(ValueError,'Original title binding changed'):
+            self.validate(self.original,self.translated)
+        del self.translated[2]
+        with self.assertRaisesRegex(ValueError,'Original title binding changed'):
+            self.validate(self.original,self.translated)
+
+    def test_rejects_link_change(self):
+        self.sample()
+        self.original[2]['bulleted_list_item']['rich_text'][0]['text']['link']={'url':'https://example.org/evidence'}
+        self.translated[3]['bulleted_list_item']['rich_text'][0]['text']['link']={'url':'https://example.org/other'}
+        with self.assertRaisesRegex(ValueError,'Non-title content changed'):
+            self.validate(self.original,self.translated)
+
+
 class CardMetadataTest(unittest.TestCase):
     def test_updates_title_status_and_icon_without_raw_run_title(self):
         properties={
