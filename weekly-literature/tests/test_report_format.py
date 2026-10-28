@@ -204,6 +204,49 @@ class BlockWriteTest(unittest.TestCase):
 
 
 class ChineseTitleTest(unittest.TestCase):
+    def test_adoption_updates_only_presentation_receipts(self):
+        import layout_upgrade as up
+        import partial_publish as pp
+        for legacy in (False,True):
+            with self.subTest(legacy=legacy):
+                store=pipeline.Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+                state={'run_key':'synthetic-run','window_start':'2026-10-01','window_end':'2026-10-07','audit':'{}'}
+                paper=row('PMID:111','Rectal trial');artifact='partial:synthetic-run:1'
+                store.sql('INSERT INTO wl_runs VALUES(?,?,?,?,?,?)',('synthetic-run','hash',state['window_start'],state['window_end'],'READY','{}'))
+                store.sql('INSERT INTO wl_candidates VALUES(?,?,?,?)',('synthetic-run','PMID:111',1,1))
+                store.sql('INSERT INTO wl_articles VALUES(?,?)',('PMID:111',paper['article']))
+                store.sql('INSERT INTO wl_analysis VALUES(?,?,?)',('synthetic-run','PMID:111',paper['payload']))
+                store.sql('INSERT INTO wl_checkpoints VALUES(?,?,?)',('synthetic-run',pp.SHOWN+'PMID:111',artifact))
+                blocks,included=rf.build_report(state,[paper])
+                blocks[0]=rf._block('callout','处理中｜分批同步，不是最终周报。本批复核1篇、纳入1篇。摘要分析，待专业审阅。',icon={'type':'emoji','emoji':'📚'})
+                blocks[-2]=rf._block('paragraph','本批送达仅代表上述分析已读回核验，运行仍在处理中；来源覆盖和医学审核均不因此完成。')
+                blocks=rf.format_blocks(blocks)
+                original=copy.deepcopy(blocks)
+                if legacy:
+                    original=[b for b in original if not up.block_text(b).startswith('英文原题：')]
+                    for b in original:
+                        for t in b[b['type']].get('rich_text',[]):
+                            t['text']['content']=t['text']['content'].replace('科普候选／证据边界：','科普候选与证据边界：')
+                translated=[]
+                for b in copy.deepcopy(original):
+                    text=up.block_text(b)
+                    if text.startswith('英文原题：'): continue
+                    if b['type']=='heading_2':
+                        translated.extend([rf._block('heading_2','1. 直肠试验'),rf._block('bulleted_list_item','英文原题： Rectal trial')])
+                    else:
+                        if b['type']=='bulleted_list_item' and ('Rectal trial｜' in text):
+                            b=rf._block('bulleted_list_item',text.replace('Rectal trial｜','直肠试验｜'))
+                        translated.append(b)
+                store.sql('INSERT INTO wl_publications VALUES(?,?,?,?)',(artifact,'synthetic-page','VERIFIED',up.fingerprint([rf._canonical(b) for b in original])))
+                with patch.object(up,'read',return_value=translated) as read,patch.object(up,'patch') as write:
+                    up.adopt_title_translations(store,'synthetic-run',{'number':1,'count':1})
+                    up.adopt_title_translations(store,'synthetic-run',{'number':1,'count':1})
+                    self.assertEqual(read.call_count,1);write.assert_not_called()
+                self.assertEqual(store.sql('SELECT content_hash FROM wl_publications')[0]['content_hash'],up.fingerprint([rf._canonical(b) for b in translated]))
+                self.assertEqual(store.sql('SELECT payload FROM wl_analysis')[0]['payload'],paper['payload'])
+                self.assertEqual(store.sql('SELECT status FROM wl_runs')[0]['status'],'READY')
+                self.assertEqual(store.sql('SELECT * FROM wl_history'),[])
+
     def sample(self):
         from layout_upgrade import validate_title_translation
         self.validate=validate_title_translation

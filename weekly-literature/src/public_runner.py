@@ -34,7 +34,7 @@ class PhaseError(Exception):
 def diagnostic(cause):
     # Match fixed code-owned prefixes only; never expose upstream error text.
     import re
-    if isinstance(cause, ValueError) and re.fullmatch(r'Non-title content changed; preserve page: \d+ (text|links|type|icon)',str(cause)):
+    if isinstance(cause, ValueError) and re.fullmatch(r'Non-title content changed; preserve page: \d+ (text|links|type|icon|suffix|translatedtitle|unmatchedtitle)',str(cause)):
         return 'DISPLAY_DIFFERENCE_'+str(cause).rsplit(': ',1)[1].upper().replace(' ','_')
     prefixes = (
         ('Conflicting identifier aliases', 'IDENTIFIER_CONFLICT'),
@@ -156,7 +156,7 @@ def execute(mode, store=None, today=None):
                         adopt_title_translations(store, row['run_key'], entry)
                         restyle_batch(store, 'partial:'+row['run_key']+':'+str(entry['number']))
                     except Exception as exc:
-                        raise PhaseError('PRESENTATION', exc) from None
+                        raise PhaseError('PRESENTATION_BATCH_'+str(int(entry['number'])), exc) from None
                 changed = False
                 for _ in range(4):
                     if not sync_partial(store, row['run_key'], progress):
