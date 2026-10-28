@@ -157,7 +157,15 @@ def publish(store, run):
     # receive its final title/date/count/status. Properties are read back too.
     update_report_metadata(run, page, included, audit,
                            os.environ['NOTION_TOKEN'], os.environ['NOTION_DATA_SOURCE_ID'])
-    store.sql("UPDATE wl_runs SET status='PUBLISHED' WHERE run_key=?", (run,))
+    if artifact!=run:
+        # The OAuth API addresses the logical run key. Atomically promote the
+        # independently verified scoped page while retaining the old ledger.
+        store.batch([
+            ('UPDATE wl_publications SET run_key=? WHERE run_key=?',('legacy:'+run+':pre-digestive-scope',run)),
+            ('UPDATE wl_publications SET run_key=? WHERE run_key=?',(run,artifact)),
+            ("UPDATE wl_runs SET status='PUBLISHED' WHERE run_key=?",(run,))])
+    else:
+        store.sql("UPDATE wl_runs SET status='PUBLISHED' WHERE run_key=?", (run,))
 
 def publish_text(store, artifact, page, text):
     content_hash = hashlib.sha256(text.encode()).hexdigest()

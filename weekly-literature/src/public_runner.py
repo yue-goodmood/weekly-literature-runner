@@ -109,7 +109,10 @@ def execute(mode, store=None, today=None):
     for row in (store.sql("SELECT run_key,audit FROM wl_runs WHERE status='READY' ORDER BY run_key")
                 if mode in ('etl','scheduled','publish') else []):
         if not strict(json.loads(row['audit'])):
-            retune(store, row['run_key'])
+            try:
+                retune(store, row['run_key'])
+            except Exception as exc:
+                raise PhaseError('SCOPE',exc) from None
             if mode!='publish':
                 return 'RETRIAGED'  # No new ETL during a recovery pass.
     if mode in ('etl', 'scheduled'):
@@ -151,7 +154,11 @@ def execute(mode, store=None, today=None):
                 entries = cached(store, row['run_key'], INDEX, [])
                 changed = False
                 for _ in range(4):
-                    if not sync_partial(store, row['run_key'], progress):
+                    try:
+                        synced=sync_partial(store, row['run_key'], progress)
+                    except Exception as exc:
+                        raise PhaseError('PARTIAL',exc) from None
+                    if not synced:
                         break
                     changed = True
                 if row['selected'] == row['analyzed']:

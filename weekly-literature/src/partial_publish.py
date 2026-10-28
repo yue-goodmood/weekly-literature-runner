@@ -16,7 +16,7 @@ NOTION_ORIGIN = 'https://www.notion.so/'
 
 
 def final_artifact(state):
-    return state['run_key']+':'+TRIAGE_POLICY if json.loads(state.get('audit') or '{}').get('triage',{}).get('policy')==TRIAGE_POLICY else state['run_key']
+    return state['run_key']+':'+TRIAGE_POLICY if state.get('status')!='PUBLISHED' and json.loads(state.get('audit') or '{}').get('triage',{}).get('policy')==TRIAGE_POLICY else state['run_key']
 
 
 def has_unsynced(store, run):
@@ -174,7 +174,7 @@ def finish_progress(store, run):
                    '。来源缺口仍以最终审计为准；科普文章仍待医学审核。')]
     publish_report_blocks(store, artifact, page, tail, os.environ['NOTION_TOKEN'],
                           prefix=[_canonical(b) for b in old])
-    finalize_article_title(page, run.split(':')[1]+'｜每周文献（处理中·分批更新）',
+    finalize_article_title(page, run.split(':')[1]+'｜每周文献（消化系统专版·处理中）',
                            run.split(':')[1]+'｜每周文献（已完成·分批索引）')
     store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
               (run, 'notion:partial:finished:v1', 'true'))
