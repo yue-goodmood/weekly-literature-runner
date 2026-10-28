@@ -55,7 +55,7 @@ def diagnostic(cause):
     trace = cause.__traceback__
     while trace is not None:
         filename = trace.tb_frame.f_code.co_filename.rsplit('/',1)[-1]
-        if filename in ('pipeline.py','supplements.py','publish.py','retune_queue.py'):
+        if filename in ('pipeline.py','supplements.py','publish.py','retune_queue.py','layout_upgrade.py'):
             location = filename.removesuffix('.py').upper()+'_L'+str(trace.tb_lineno)
         trace = trace.tb_next
     return label+('_'+location if 'location' in locals() else '')
@@ -149,8 +149,11 @@ def execute(mode, store=None, today=None):
                 if entries:
                     upgrade_progress(store, row['run_key'], entries)
                 for entry in entries:
-                    adopt_title_translations(store, row['run_key'], entry)
-                    restyle_batch(store, 'partial:'+row['run_key']+':'+str(entry['number']))
+                    try:
+                        adopt_title_translations(store, row['run_key'], entry)
+                        restyle_batch(store, 'partial:'+row['run_key']+':'+str(entry['number']))
+                    except Exception as exc:
+                        raise PhaseError('PRESENTATION', exc) from None
                 changed = False
                 for _ in range(4):
                     if not sync_partial(store, row['run_key'], progress):
