@@ -45,7 +45,7 @@ jobs:
           NOTION_DATA_SOURCE_ID: ${{ secrets.NOTION_DATA_SOURCE_ID }}
           NOTION_ARTICLE_DATA_SOURCE_ID: ${{ secrets.NOTION_ARTICLE_DATA_SOURCE_ID }}
           NCBI_EMAIL: ${{ secrets.NCBI_EMAIL }}
-          MODE: ${{ inputs.mode || (github.event.schedule == '15 5 * * 1-5' && 'publish') || 'etl' }}
+          MODE: ${{ inputs.mode || (github.event_name == 'push' && 'publish') || (github.event.schedule == '15 5 * * 1-5' && 'publish') || 'etl' }}
           WORK_BUDGET_SECONDS: '600'
           D1_RUN_READ_BUDGET: '250000'
           D1_RUN_WRITE_BUDGET: '10000'

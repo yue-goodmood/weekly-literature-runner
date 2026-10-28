@@ -61,9 +61,29 @@ and success/failure of workflow runs are visible to everyone.
 6. Verify through the private status API: strict policy, real selected/analyzed/
    pending progress, preserved analyses, source-specific coverage and windows.
 7. Continue existing assistant analysis; never duplicate saved decisions.
-8. Publish only after selected == analyzed. Verify the Notion readback and D1
-   completion. Then declare migration complete; do not infer success from a
-   green test or merged commit.
+8. Publish processing batches while review continues; finalize only after
+   selected == analyzed. Verify the Notion readback and D1 completion. Do not
+   infer success from a green test or merged commit.
+
+### Incremental Notion delivery
+
+Publication checks deliver up to four batches of 50 saved decisions per process.
+There is no total-paper cap: later checks continue the remaining delta. A stable
+`processing` index in the report database links the immutable batch pages; only
+included evidence is rendered, with each batch's source audit. High-priority
+articles are saved separately with existing medical-review fields preserved.
+The index shows analyzed/selected/pending snapshots and is explicitly not final.
+
+D1 freezes each batch before Notion writes. A lost append response is reconciled
+by exact readback, never blindly repeated. Delivery receipts follow verified
+batch/draft/index writes; retries neither summarize again nor overwrite edits.
+Partial delivery never sets PUBLISHED or commits wl_history. Final publication
+retains its independent verification, and the processing index receives a link
+to that verified final report. Finalization waits for all batches and links them
+instead of rewriting thousands of summaries in one giant page. Existing archived
+content is preserved. Main-branch deployment pushes check publication
+only, avoiding retrieval work on a publishing-code deployment. Existing weekday
+publication checks continue batching; no new high-frequency schedule is added.
 
 The schedules are weekday 08:15 retrieval/recovery and an independent weekday
 13:15 publication check (Asia/Shanghai). Retrieval resumes the oldest unfinished

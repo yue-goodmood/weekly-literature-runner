@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 from pipeline import (ROOT, Store, PubMed, TRIAGE_POLICY, digest, request, run_etl,
                       work_budget, WorkBudgetReached, UpstreamDeferred, DatabaseBudgetReached)
 from publish import publish
+from partial_publish import sync_partial, finish_progress, has_unsynced
 from retune_queue import retune
 from supplements import EuropePMC, Arxiv
 
@@ -123,17 +124,37 @@ def execute(mode, store=None, today=None):
                 raise PhaseError('ETL', exc) from None
     if mode in ('publish', 'scheduled'):
         rows = store.sql("""
-            SELECT r.run_key,r.audit,
+            SELECT r.run_key,r.audit,r.status,
               (SELECT count(*) FROM wl_candidates c WHERE c.run_key=r.run_key AND c.selected=1) AS selected,
               (SELECT count(*) FROM wl_analysis a JOIN wl_candidates c
                  ON c.run_key=a.run_key AND c.evidence_key=a.evidence_key
                  WHERE c.run_key=r.run_key AND c.selected=1) AS analyzed
-            FROM wl_runs r WHERE r.status IN ('READY','PUBLISHING') ORDER BY r.run_key
+            FROM wl_runs r WHERE r.status IN ('READY','PUBLISHING') OR
+              (r.status='PUBLISHED' AND EXISTS (SELECT 1 FROM wl_checkpoints p
+                WHERE p.run_key=r.run_key AND p.unit='notion:partial:index:v1')
+               AND NOT EXISTS (SELECT 1 FROM wl_checkpoints p WHERE p.run_key=r.run_key
+                AND p.unit='notion:partial:finished:v1')) ORDER BY r.run_key
         """)
         for row in rows:
-            if strict(json.loads(row['audit'])) and row['selected'] == row['analyzed']:
-                publish(store, row['run_key'])
-                return 'PUBLICATION_VERIFIED'
+            if strict(json.loads(row['audit'])):
+                if row.get('status') in ('PUBLISHED','PUBLISHING'):
+                    if row['status'] == 'PUBLISHING':
+                        publish(store, row['run_key'])
+                    finish_progress(store, row['run_key'])
+                    return 'PUBLICATION_VERIFIED'
+                progress = {k: row[k] for k in ('selected','analyzed')}
+                changed = False
+                for _ in range(4):
+                    if not sync_partial(store, row['run_key'], progress):
+                        break
+                    changed = True
+                if row['selected'] == row['analyzed']:
+                    if has_unsynced(store, row['run_key']):
+                        return 'PARTIAL_SYNC_VERIFIED'
+                    publish(store, row['run_key'])
+                    finish_progress(store, row['run_key'])
+                    return 'PUBLICATION_VERIFIED'
+                return 'PARTIAL_SYNC_VERIFIED' if changed else 'AWAITING_REVIEW'
         return 'AWAITING_REVIEW' if rows else 'NO_PENDING_PUBLICATION'
     return 'ETL_CHECKPOINTED'
 
@@ -147,6 +168,7 @@ def safe_main(mode, worker=execute):
                 status = worker(mode)
         allowed = {'DISABLED', 'READY', 'RETRIAGED', 'ETL_CHECKPOINTED',
                    'PUBLICATION_VERIFIED', 'AWAITING_REVIEW', 'NO_PENDING_PUBLICATION',
+                   'PARTIAL_SYNC_VERIFIED',
                    'NO_PENDING_ETL'}
         if status not in allowed:
             raise ConfigurationError()

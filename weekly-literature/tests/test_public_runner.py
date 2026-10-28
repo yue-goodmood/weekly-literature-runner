@@ -10,6 +10,32 @@ import public_runner as r
 
 
 class PublicRunnerTest(unittest.TestCase):
+    def test_complete_analysis_waits_for_all_notion_batches(self):
+        class Store:
+            def migrate(self): pass
+            def sql(self,*args):
+                return [{'run_key':'private-run','status':'READY','audit':json.dumps({
+                    'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY}}),
+                    'selected':1000,'analyzed':1000}]
+        env={key:'test' for key in r.REQUIRED}; env['ENABLE_PRODUCTION']='true'
+        with patch.dict(os.environ,env), patch.object(r,'sync_partial',return_value=True), \
+             patch.object(r,'has_unsynced',return_value=True), patch.object(r,'publish') as publish:
+            self.assertEqual(r.execute('publish',Store()),'PARTIAL_SYNC_VERIFIED')
+            publish.assert_not_called()
+
+    def test_final_index_repair_after_published_run_failure(self):
+        class Store:
+            def migrate(self): pass
+            def sql(self,*args):
+                return [{'run_key':'private-run','status':'PUBLISHED','audit':json.dumps({
+                    'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY}})}]
+        env={key:'test' for key in r.REQUIRED}; env['ENABLE_PRODUCTION']='true'
+        with patch.dict(os.environ,env), patch.object(r,'finish_progress') as finish, \
+             patch.object(r,'sync_partial') as sync:
+            self.assertEqual(r.execute('publish',Store()),'PUBLICATION_VERIFIED')
+            finish.assert_called_once_with(unittest.mock.ANY,'private-run')
+            sync.assert_not_called()
+
     def test_database_budget_pause_is_not_reported_as_daily_quota_or_completion(self):
         def worker(mode): raise r.PhaseError('ETL',r.DatabaseBudgetReached())
         code,out=self.output(worker)
@@ -118,8 +144,9 @@ class PublicRunnerTest(unittest.TestCase):
                 return [{'run_key':'private-run','audit':json.dumps({'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY}}), 'selected':2, 'analyzed':1}]
         env = {key:'private-value' for key in r.REQUIRED}
         env['ENABLE_PRODUCTION'] = 'true'
-        with patch.dict(os.environ, env), patch.object(r,'publish') as publish:
-            self.assertEqual(r.execute('publish', Store()), 'AWAITING_REVIEW')
+        with patch.dict(os.environ, env), patch.object(r,'publish') as publish, patch.object(r,'sync_partial',return_value=True) as sync:
+            self.assertEqual(r.execute('publish', Store()), 'PARTIAL_SYNC_VERIFIED')
+            self.assertEqual(sync.call_count,4)
             publish.assert_not_called()
 
     def test_oldest_etl_resumes_with_its_original_frozen_config(self):
