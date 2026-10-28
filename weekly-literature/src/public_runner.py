@@ -142,14 +142,6 @@ def execute(mode, store=None, today=None):
     if mode in ('publish', 'scheduled'):
         from backfill import needed, resume
         config=json.loads((ROOT/'config/topics.json').read_text())
-        for state in store.sql("SELECT * FROM wl_runs WHERE status='READY' ORDER BY run_key"):
-            if config.get('backfill_existing_windows') and needed(state):
-                try:
-                    resume(store,state['run_key'],config,PubMed(),
-                           {'Europe PMC':EuropePMC(request),'arXiv':Arxiv(request)})
-                except Exception as exc:
-                    raise PhaseError('BACKFILL',exc) from None
-                return 'BACKFILL_COMPLETED'
         rows = store.sql(f"""
             SELECT r.run_key,r.audit,r.status,
               (SELECT count(*) FROM wl_candidates c WHERE c.run_key=r.run_key AND c.selected=1) AS selected,
@@ -188,6 +180,17 @@ def execute(mode, store=None, today=None):
                     changed = True
                 if changed:
                     store.sql("UPDATE wl_runs SET audit=json_remove(audit,'$.delivery_diagnostic') WHERE run_key=?",(row['run_key'],))
+                # Deliver already analysed evidence before spending this run's
+                # remaining budget on supplemental retrieval. Never finalize a
+                # batch while an approved backfill is pending or running.
+                state=store.sql('SELECT * FROM wl_runs WHERE run_key=?',(row['run_key'],))[0]
+                if config.get('backfill_existing_windows') and needed(state):
+                    try:
+                        resume(store,row['run_key'],config,PubMed(),
+                               {'Europe PMC':EuropePMC(request),'arXiv':Arxiv(request)})
+                    except Exception as exc:
+                        raise PhaseError('BACKFILL',exc) from None
+                    return 'BACKFILL_COMPLETED'
                 if row['selected'] == row['analyzed']:
                     if has_unsynced(store, row['run_key']):
                         return 'PARTIAL_SYNC_VERIFIED'
