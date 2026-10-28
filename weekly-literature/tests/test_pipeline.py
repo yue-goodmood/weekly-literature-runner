@@ -288,7 +288,8 @@ class PipelineTest(unittest.TestCase):
     def test_digestive_pelvic_scope_is_not_generic_medical_ai(self):
         for title in ('Gastric cancer surgery','Small bowel obstruction','Crohn disease',
                       'Pelvic floor dyssynergia','Fecal incontinence','Functional constipation',
-                      'Esophageal achalasia','Pancreatic cancer','Liver fibrosis','Rectal prolapse'):
+                      'Esophageal achalasia','Pancreatic cancer','Liver fibrosis','Rectal prolapse',
+                      'Screening colonoscopy','Diagnostic gastroscopy','Device assisted enteroscopy'):
             self.assertGreater(p.score({'title':title}),0,title)
         for title in ('Deep learning for Parkinson disease','AI in acute myeloid leukemia',
                       'Psychotic disorders and speech compression','Kidney stone federated learning'):

@@ -19,6 +19,18 @@ def final_artifact(state):
     return state['run_key']+':'+TRIAGE_POLICY if state.get('status')!='PUBLISHED' and json.loads(state.get('audit') or '{}').get('triage',{}).get('policy')==TRIAGE_POLICY else state['run_key']
 
 
+def title_translations(store,run):
+    # D1 has a short LIKE-pattern limit. An indexed lexical prefix range also
+    # avoids wildcard escaping and does not scan unrelated checkpoints.
+    prefix='partial:'+run+':'
+    translations={}
+    for receipt in store.sql('SELECT payload FROM wl_checkpoints '
+            'WHERE run_key>=? AND run_key<? AND unit=?',
+            (prefix,prefix[:-1]+';','layout:chinese-titles:v1')):
+        translations.update(json.loads(receipt['payload']).get('translations',{}))
+    return translations
+
+
 def has_unsynced(store, run):
     return bool(store.sql(
         'SELECT 1 FROM wl_candidates c JOIN wl_analysis n '
@@ -118,10 +130,7 @@ def sync_partial(store, run, progress):
         'ORDER BY c.evidence_key', (run, *active['keys']))
     if len(rows) != len(active['keys']):
         raise ValueError('Partial batch metadata or analysis missing')
-    translations={}
-    for receipt in store.sql('SELECT payload FROM wl_checkpoints WHERE run_key LIKE ? AND unit=?',
-            ('partial:'+run+':%','layout:chinese-titles:v1')):
-        translations.update(json.loads(receipt['payload']).get('translations',{}))
+    translations=title_translations(store,run)
     for row in rows:
         article=json.loads(row['article'])
         if article.get('title') in translations:

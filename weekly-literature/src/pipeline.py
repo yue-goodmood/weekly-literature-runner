@@ -87,9 +87,10 @@ DIGESTIVE_TERMS = re.compile(
     r'oesophag\w*|esophag\w*|gastrointestin\w*|gastroenter\w*|intestin\w*|bowel|'
     r'duoden\w*|jejunu\w*|jejunal|ileum|ileal|ileitis|colitis|crohn\w*|celiac|coeliac|'
     r'anorectal|anal|anus|haemorrhoid\w*|hemorrhoid\w*|defecat\w*|constipat\w*|'
-    r'fecal|faecal|rectocele|enteroc\w*|pelvic[- ]floor|liver|hepat\w*|pancrea\w*|'
+    r'fecal|faecal|rectocele|enterocolitis|enterocutaneous|pelvic[- ]floor|liver|hepat\w*|pancrea\w*|'
     r'biliary|gallbladder|cholang\w*|cholecyst\w*|appendic\w*|appendix|'
-    r'achalasia|gastroparesis|diverticul\w*)\b|'
+    r'achalasia|gastroparesis|diverticul\w*|colonoscop\w*|sigmoidoscop\w*|'
+    r'gastroscop\w*|enteroscop\w*|proctoscop\w*|ercp|eus)\b|'
     r'食管|食道|胃癌|胃炎|胃肠|小肠|十二指肠|空肠|回肠|结直肠|结肠|直肠|肛门|'
     r'盆底|便秘|排便|粪便失禁|炎症性肠病|克罗恩|肝癌|肝炎|肝胆|胆囊|胆管|胰腺', re.I)
 OTHER_PRIMARY_DISEASE = re.compile(
