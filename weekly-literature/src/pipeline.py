@@ -136,6 +136,9 @@ def request(url, data=None, headers=None):
             if exc.code==400:
                 try:
                     value=json.loads(detail or exc.read(16384))
+                    if exc.safe_service=='D1':
+                        # Private D1 audit only; never stringify in public CI.
+                        exc.private_detail={'errors':value.get('errors',[])[:3]}
                     message=value.get('message','')
                     field=re.search(r'\bbody(?:\.[a-z_]+|\[\d+\])+',message)
                     if field: exc.safe_field=field[0]
