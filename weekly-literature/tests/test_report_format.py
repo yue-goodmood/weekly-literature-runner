@@ -3,6 +3,7 @@ import json
 import sys
 from pathlib import Path
 import unittest
+import copy
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -69,6 +70,79 @@ class LayoutTest(unittest.TestCase):
         segments=rf._text(x)
         self.assertEqual("".join(s["text"]["content"] for s in segments),x)
         self.assertTrue(all(len(s["text"]["content"]) <= 1500 for s in segments))
+
+    def test_historical_style_preserves_words_links_and_original_title(self):
+        blocks,_=rf.build_report(self.state,[row('PMID:111','Rectal cancer trial')])
+        self.assertEqual(blocks[0]['callout']['color'],'blue_background')
+        labels=[b['bulleted_list_item']['rich_text'] for b in blocks if b['type']=='bulleted_list_item']
+        original=next(x for x in labels if x[0]['text']['content']=='英文原题：')
+        self.assertTrue(original[0]['annotations']['bold'])
+        self.assertEqual(''.join(x['text']['content'] for x in original),'英文原题：Rectal cancer trial')
+        self.assertEqual(rf.format_blocks(blocks),blocks)
+
+
+class LayoutUpgradeTest(unittest.TestCase):
+    def setUp(self):
+        import layout_upgrade as up
+        import partial_publish as pp
+        self.up,self.pp=up,pp
+        self.store=pipeline.Store(':memory:');self.store.migrate();self.addCleanup(self.store.db.close)
+        self.run='weekly-literature:2026-10-19:Asia/Shanghai'
+        self.blocks=[];self.fail_after=None;self.writes=0
+        self.entries=[{'number':1,'page':'synthetic-batch','count':50,'included':40,
+                       'progress':{'selected':100,'analyzed':60}}]
+
+    def init_page(self,artifact,blocks):
+        self.blocks=[dict(copy.deepcopy(b),id='block'+str(i)) for i,b in enumerate(blocks)]
+        self.store.sql('INSERT INTO wl_publications(run_key,page_id,status,content_hash) VALUES(?,?,?,?)',
+                       (artifact,'page','VERIFIED',self.up.fingerprint([rf._canonical(b) for b in blocks])))
+
+    def read(self,page): return copy.deepcopy(self.blocks)
+
+    def patch(self,url,body):
+        self.writes+=1
+        if 'children' in body:
+            self.blocks.extend(dict(copy.deepcopy(b),id='new'+str(self.writes)+'-'+str(i)) for i,b in enumerate(body['children']))
+        elif body.get('archived'):
+            self.blocks=[b for b in self.blocks if b['id']!=url.rsplit('/',1)[1]]
+        else:
+            block=next(b for b in self.blocks if b['id']==url.rsplit('/',1)[1]);block.update(copy.deepcopy(body))
+        if self.writes==self.fail_after: raise TimeoutError('committed, response lost')
+
+    def test_index_archive_timeout_preserves_entries_and_resumes_without_duplicate(self):
+        artifact='progress:'+self.run
+        self.init_page(artifact,self.pp.legacy_progress_blocks(self.run,self.entries))
+        self.fail_after=1
+        with patch.object(self.up,'read',self.read),patch.object(self.up,'patch',self.patch):
+            with self.assertRaises(TimeoutError): self.up.upgrade_progress(self.store,self.run,self.entries)
+            self.fail_after=None
+            self.up.upgrade_progress(self.store,self.run,self.entries)
+            count=self.writes;self.up.upgrade_progress(self.store,self.run,self.entries)
+        self.assertEqual(count,self.writes)
+        self.assertEqual([rf._canonical(b) for b in self.blocks],
+                         [rf._canonical(b) for b in self.pp.progress_blocks(self.run,self.entries)])
+
+    def test_batch_style_timeout_replays_and_keeps_science_unchanged(self):
+        artifact='partial:'+self.run+':1'
+        old=[rf._block('callout','处理中｜摘要',icon={'type':'emoji','emoji':'📚'}),
+             rf._block('bulleted_list_item','研究解读：结果RR1.2，95%CI未报告。')]
+        self.init_page(artifact,old);self.fail_after=1
+        with patch.object(self.up,'read',self.read),patch.object(self.up,'patch',self.patch):
+            with self.assertRaises(TimeoutError): self.up.restyle_batch(self.store,artifact)
+            self.fail_after=None;self.up.restyle_batch(self.store,artifact)
+        before=''.join(v[0] for b in old for v in rf._canonical(b).get('content',[]))
+        after=''.join(v[0] for b in self.blocks for v in rf._canonical(b).get('content',[]))
+        self.assertEqual(before,after)
+        self.assertEqual(self.store.sql('SELECT content_hash FROM wl_publications')[0]['content_hash'],
+                         self.up.fingerprint([rf._canonical(b) for b in self.blocks]))
+
+    def test_unknown_edits_fail_before_archiving_or_styling(self):
+        artifact='progress:'+self.run
+        self.init_page(artifact,self.pp.legacy_progress_blocks(self.run,self.entries))
+        self.blocks[0]=dict(rf._block('paragraph','manual notes'),id='block0')
+        with patch.object(self.up,'read',self.read),patch.object(self.up,'patch',self.patch):
+            with self.assertRaises(ValueError): self.up.upgrade_progress(self.store,self.run,self.entries)
+        self.assertEqual(self.writes,0)
 
 
 class BlockWriteTest(unittest.TestCase):
@@ -172,6 +246,7 @@ class CardMetadataTest(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+
 
 
 

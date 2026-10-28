@@ -143,6 +143,13 @@ def execute(mode, store=None, today=None):
                     finish_progress(store, row['run_key'])
                     return 'PUBLICATION_VERIFIED'
                 progress = {k: row[k] for k in ('selected','analyzed')}
+                from partial_publish import cached, INDEX
+                from layout_upgrade import restyle_batch, upgrade_progress
+                entries = cached(store, row['run_key'], INDEX, [])
+                if entries:
+                    upgrade_progress(store, row['run_key'], entries)
+                for entry in entries:
+                    restyle_batch(store, 'partial:'+row['run_key']+':'+str(entry['number']))
                 changed = False
                 for _ in range(4):
                     if not sync_partial(store, row['run_key'], progress):

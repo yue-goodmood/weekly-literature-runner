@@ -14,6 +14,7 @@ class PublicRunnerTest(unittest.TestCase):
         class Store:
             def migrate(self): pass
             def sql(self,*args):
+                if 'SELECT payload' in args[0]: return []
                 return [{'run_key':'private-run','status':'READY','audit':json.dumps({
                     'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY}}),
                     'selected':1000,'analyzed':1000}]
@@ -140,6 +141,7 @@ class PublicRunnerTest(unittest.TestCase):
         class Store:
             def migrate(self): pass
             def sql(self, sql, *args):
+                if 'SELECT payload' in sql: return []
                 if 'SELECT run_key,audit' in sql: return []
                 return [{'run_key':'private-run','audit':json.dumps({'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY}}), 'selected':2, 'analyzed':1}]
         env = {key:'private-value' for key in r.REQUIRED}

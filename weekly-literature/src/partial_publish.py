@@ -6,7 +6,7 @@ delivery nor an empty delta commits wl_history or finalizes a literature run.
 import json
 import os
 from publish import provision_page, finalize_article_title, publish_draft
-from report_format import build_report, publish_report_blocks, _block, _canonical
+from report_format import build_report, publish_report_blocks, _block, _canonical, format_blocks
 
 INDEX = 'notion:partial:index:v1'
 ACTIVE = 'notion:partial:active:v1'
@@ -31,17 +31,24 @@ def final_index(state, rows, entries):
                      '篇，纳入'+str(included)+'篇，排除'+str(len(rows)-included)+
                      '篇。下列各批已读回核验，完整分析按批保存；科普稿仍待医学审核。',
                      icon={'type':'emoji','emoji':'📚'}),
+              {'object':'block','type':'table_of_contents','table_of_contents':{}},
+              _block('heading_1','本周核心结论'),
+              _block('paragraph','已核验各批的核心结论和A—G专题正文见下列入口；此处不重新推理或改写医学结论。'),
+              _block('heading_1','检索与纳入概况'),
+              _block('bulleted_list_item','候选复核：'+str(len(rows))+'篇；纳入：'+str(included)+'篇；排除：'+str(len(rows)-included)+'篇。'),
               _block('heading_1','文献分析（分批阅读）')]
     for item in entries:
         blocks.append(_block('paragraph', '批次'+str(item['number'])+'｜复核'+str(item['count'])+
                              '、纳入'+str(item['included'])+'：'+NOTION_ORIGIN+item['page'].replace('-','')))
-    blocks.append(_block('heading_1','检索审计与适用边界'))
+    blocks.append(_block('heading_1','科普选题建议'))
+    blocks.append(_block('paragraph','各批保留选题优先级和证据边界，高优先级稿件单独保存，仍待医学审核。'))
+    blocks.append(_block('heading_1','检索审计与局限'))
     blocks.append(_block('paragraph','检索窗口：'+state['window_start']+' 至 '+state['window_end']))
     for name, info in audit.get('supplementary_sources',{}).items():
         blocks.append(_block('paragraph',name+'：'+str(info.get('status','UNKNOWN'))+
                              '；窗口：'+str(info.get('window_start','未报告'))+' 至 '+str(info.get('window_end','未报告'))))
     blocks.append(_block('paragraph','COMPLETE_FOR_QUERY仅代表预设查询完成，不代表全部来源完整覆盖。分析基于既有证据材料，不替代全文医学审核或患者诊疗。'))
-    return blocks, included
+    return format_blocks(blocks), included
 
 
 def cached(store, run, unit, default):
@@ -49,7 +56,7 @@ def cached(store, run, unit, default):
     return json.loads(rows[0]['payload']) if rows else default
 
 
-def progress_blocks(run, entries):
+def legacy_progress_blocks(run, entries):
     blocks = [_block('heading_1', run.split(':')[1]+'｜每周文献（处理中）'),
               _block('paragraph', '以下仅为已分析内容的分批同步，不是最终周报。未纳入文献不展示正文；科普稿均待医学审核。最新进度见末尾批次，来源缺口见各批审计。')]
     for item in entries:
@@ -61,9 +68,33 @@ def progress_blocks(run, entries):
     return blocks
 
 
+def progress_blocks(run, entries):
+    blocks = [
+        _block('callout', '处理中｜'+run.split(':')[1]+'批次。分批保存已分析文献，不是最终周报。医学结论不在排版时重新生成。',
+               icon={'type':'emoji','emoji':'📚'}),
+        {'object':'block','type':'table_of_contents','table_of_contents':{}},
+        _block('heading_1','本周核心结论'),
+        _block('paragraph','各批页面按专题列出已保存的核心结论与完整解读。批次尚未结束，不把阶段性结果表述为全周结论。'),
+        _block('heading_1','检索与纳入概况'),
+        _block('bulleted_list_item','批次日期：'+run.split(':')[1]+'；真实已分析、候选总数和待分析数量见下方各批进度。'),
+        _block('heading_1','科普选题建议'),
+        _block('paragraph','各批保留科普候选与证据边界；高优先级完整稿单独保存，均待医学审核，不视为对外发布。'),
+        _block('heading_1','检索审计与局限'),
+        _block('paragraph','来源状态和窗口保留在各批文末。COMPLETE_FOR_QUERY仅代表既定查询完成；PARTIAL及未检索来源不得写成完整。分析基于摘要时仍须保留限定。'),
+        _block('heading_1','文献分析（分批阅读）'),
+        _block('paragraph','各批沿用A—G专题分组：临床重点与指南；新辅助与器官保留；外科与围术期；康复与患者报告结局；筛查与系统治疗；医学AI；基础转化。每篇保留原题、来源、期刊日期、研究解读与科普边界。')]
+    for item in entries:
+        old = legacy_progress_blocks(run, [item])[-1]
+        blocks.append(_block('bulleted_list_item', old['paragraph']['rich_text'][0]['text']['content']))
+    return format_blocks(blocks)
+
+
 def sync_partial(store, run, progress):
     """Sync at most 50 saved decisions; freeze the selection before Notion writes."""
     entries = cached(store, run, INDEX, [])
+    if entries:
+        from layout_upgrade import upgrade_progress
+        upgrade_progress(store, run, entries)
     active = cached(store, run, ACTIVE, None)
     if active is None:
         rows = store.sql(
@@ -95,7 +126,7 @@ def sync_partial(store, run, progress):
                        '篇、纳入'+str(included)+'篇。摘要分析，待专业审阅。',
                        icon={'type':'emoji','emoji':'📚'})
     blocks[-2] = _block('paragraph', '本批送达仅代表上述分析已读回核验，运行仍在处理中；来源覆盖和医学审核均不因此完成。')
-    publish_report_blocks(store, artifact, page, blocks, os.environ['NOTION_TOKEN'])
+    publish_report_blocks(store, artifact, page, format_blocks(blocks), os.environ['NOTION_TOKEN'])
     finalize_article_title(page, artifact, run.split(':')[1]+'｜处理中·文献批次'+str(active['number']))
     for row in rows:
         publish_draft(store, row)
@@ -120,6 +151,8 @@ def finish_progress(store, run):
     entries = cached(store, run, INDEX, [])
     if not entries:
         return
+    from layout_upgrade import upgrade_progress
+    upgrade_progress(store, run, entries)
     state = store.sql('SELECT status FROM wl_runs WHERE run_key=?', (run,))[0]
     if state['status'] != 'PUBLISHED':
         raise ValueError('Final run not published')
