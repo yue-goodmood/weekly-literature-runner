@@ -114,6 +114,20 @@ not run ETL or re-triage, so a source failure cannot block its separate check.
 Manual dispatch can publish immediately after medical review completes.
 GitHub scheduled starts can be delayed and are not an exact-time SLA.
 
+Publication mode never starts or resumes historical backfill. It delivers the
+already saved analysis batches independently, and reports AWAITING_BACKFILL if
+there is no further delivery delta but finalization remains blocked. Retrieval
+continues only through the existing etl/scheduled entry point. Reaching a local
+D1 run budget is a checkpointed pause, not permission to increase that budget.
+
+If the live upstream count changes inside a frozen source window, only that
+query's pagination snapshot is retired. Its original pages, ingested records,
+and immutable analyses remain preserved. A separately versioned snapshot starts
+on the next bounded recovery pass, with the same query and date window. Strict
+count, uniqueness and cursor checks remain mandatory; no partial snapshot gets
+a completion receipt. Backfill audits expose each completed source immediately
+rather than waiting for every source to finish.
+
 New ETL runs checkpoint their exact configuration before source retrieval. A
 legacy incomplete run without that checkpoint can resume only if its recorded
 hash matches the available configuration; otherwise `FROZEN_CONFIG_REQUIRED`
