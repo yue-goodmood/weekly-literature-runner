@@ -9,7 +9,7 @@ import urllib.error
 from zoneinfo import ZoneInfo
 
 from pipeline import (ROOT, Store, PubMed, TRIAGE_POLICY, digest, request, run_etl,
-                      work_budget, WorkBudgetReached, UpstreamDeferred, DatabaseBudgetReached)
+                      work_budget, check_budget, WorkBudgetReached, UpstreamDeferred, DatabaseBudgetReached)
 from publish import publish
 from partial_publish import sync_partial, finish_progress, has_unsynced, INDEX
 from retune_queue import retune
@@ -165,7 +165,8 @@ def execute(mode, store=None, today=None):
                 from partial_publish import cached
                 entries = cached(store, row['run_key'], INDEX, [])
                 changed = False
-                for _ in range(4):
+                while True:
+                    check_budget()
                     try:
                         synced=sync_partial(store, row['run_key'], progress)
                     except Exception as exc:

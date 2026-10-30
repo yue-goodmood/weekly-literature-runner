@@ -71,8 +71,9 @@ and success/failure of workflow runs are visible to everyone.
 
 ### Incremental Notion delivery
 
-Publication checks deliver up to four batches of 50 saved decisions per process.
-There is no total-paper cap: later checks continue the remaining delta. A stable
+Publication checks deliver batches of 50 saved decisions until the delta is
+empty or the existing work/D1 budget safely pauses the process. There is no
+four-batch process cap and no total-paper cap; later checks continue any remaining delta. A stable
 `processing` index in the report database links the immutable batch pages; only
 included evidence is rendered, with each batch's source audit. High-priority
 articles are saved separately with existing medical-review fields preserved.
