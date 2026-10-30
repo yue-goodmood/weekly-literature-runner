@@ -223,6 +223,11 @@ def safe_main(mode, worker=execute):
                      'PAUSED_WORK_BUDGET' if isinstance(cause, WorkBudgetReached) else
                      'PAUSED_UPSTREAM_COOLDOWN')
             print('weekly-literature: '+label)
+            if isinstance(cause, DatabaseBudgetReached) and cause.usage:
+                # Allowlisted resource counters only, never SQL, IDs or payloads.
+                print('weekly-literature-usage: '+' '.join(
+                    key+'='+str(int(cause.usage[key]))
+                    for key in ('reads','writes','read_limit','write_limit')))
             return 0  # A checkpointed pause is not completion and needs no rerun storm.
         # Never stringify an exception in public CI: it can contain URLs,
         # upstream payloads, private page IDs, SQL parameters, or bearer tokens.

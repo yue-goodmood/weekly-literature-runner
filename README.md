@@ -129,6 +129,27 @@ count, uniqueness and cursor checks remain mandatory; no partial snapshot gets
 a completion receipt. Backfill audits expose each completed source immediately
 rather than waiting for every source to finish.
 
+Source resumes now use a durable next-page pointer and an indexed source-ID /
+cursor ledger. The ledger, page ingestion marker and next pointer are committed
+in one small batch, so a crash cannot advance past an uncommitted page. Legacy
+frozen pages migrate once without another download or medical analysis. Normal
+resumes do not reload all earlier page payloads just to rebuild in-memory sets.
+
+Fresh historical supplementary queries freeze disjoint date partitions of at
+most seven days, covering the original window without gaps or a result cap.
+Already-started snapshots retain their exact query/window/cursor instead of
+throwing away completed work to repartition. Each partition must finish all its
+pages before it gets a completion receipt. Aggregate counts are source hits,
+not a claim of unique canonical articles across a changing index; canonical
+ingestion independently deduplicates identifiers. Original ETL audit is unchanged.
+
+Known immutable-analysis identities are resolved together per incoming page,
+and unchanged candidate scores cause no update. If the existing D1 run guard
+pauses a process, public diagnostics expose only integer reads, writes and their
+unchanged limits. No SQL, query text, evidence IDs, credentials or medical
+payloads are printed, and no extra audit write is attempted after quota/budget
+exhaustion.
+
 New ETL runs checkpoint their exact configuration before source retrieval. A
 legacy incomplete run without that checkpoint can resume only if its recorded
 hash matches the available configuration; otherwise `FROZEN_CONFIG_REQUIRED`

@@ -5,9 +5,123 @@ import unittest
 import urllib.parse
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from pipeline import Store, aliases, run_supplements
-from supplements import EuropePMC, Arxiv, harvest, SourceSnapshotChanged
+from supplements import EuropePMC, Arxiv, harvest, harvest_windowed, SourceSnapshotChanged
 
 class SupplementTests(unittest.TestCase):
+    def test_resume_after_39_pages_reads_only_next_page(self):
+        from unittest.mock import patch
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            fail=True
+            def page(self,q,start,end,cursor):
+                offset=int(cursor or 0)
+                if offset==39 and self.fail: raise TimeoutError()
+                return {'records':[{'source_id':str(offset)}],'total':40,
+                        'next':str(offset+1) if offset<39 else None}
+        adapter=Adapter(); delivered=[]
+        with self.assertRaises(TimeoutError):
+            harvest(store,'r',adapter,{'q':'x'},'a','b',delivered.append)
+        self.assertEqual(len(delivered),39)
+        adapter.fail=False
+        with patch.object(store,'sql',wraps=store.sql) as sql:
+            value=harvest(store,'r',adapter,{'q':'x'},'a','b',delivered.append)
+            self.assertLessEqual(sql.call_count,8)
+        self.assertEqual(value['counts'],{'q':40})
+        self.assertEqual([r['source_id'] for r in delivered],[str(i) for i in range(40)])
+
+    def test_cross_page_duplicate_is_detected_after_resume(self):
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            fail=True
+            def page(self,q,start,end,cursor):
+                if cursor=='last' and self.fail: raise TimeoutError()
+                return ({'records':[{'source_id':'a'}],'total':3,'next':'middle'} if cursor is None else
+                        {'records':[{'source_id':'b'}],'total':3,'next':'last'} if cursor=='middle' else
+                        {'records':[{'source_id':'a'}],'total':3,'next':None})
+        adapter=Adapter()
+        with self.assertRaises(TimeoutError): harvest(store,'r',adapter,{'q':'x'},'a','b',lambda row:None)
+        adapter.fail=False
+        with self.assertRaisesRegex(ValueError,'Repeated source record'):
+            harvest(store,'r',adapter,{'q':'x'},'a','b',lambda row:None)
+
+    def test_cursor_cycle_survives_process_resume(self):
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            fail=True
+            def page(self,q,start,end,cursor):
+                if cursor=='two' and self.fail: raise TimeoutError()
+                following={None:'one','one':'two','two':'one'}[cursor]
+                return {'records':[{'source_id':str(cursor)}],'total':5,'next':following}
+        adapter=Adapter()
+        with self.assertRaises(TimeoutError): harvest(store,'r',adapter,{'q':'x'},'a','b',lambda row:None)
+        adapter.fail=False
+        with self.assertRaisesRegex(ValueError,'repeated source cursor'):
+            harvest(store,'r',adapter,{'q':'x'},'a','b',lambda row:None)
+
+    def test_page_marker_seen_ids_and_pointer_rollback_together(self):
+        from unittest.mock import patch
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            calls=0
+            def page(self,*args):
+                self.calls+=1
+                return {'records':[{'source_id':'a'}],'total':1,'next':None}
+        adapter=Adapter(); real_batch=store.batch
+        def broken(statements):
+            real_batch(statements[:1]+[('INVALID SQL',())]+statements[1:])
+        with patch.object(store,'batch',side_effect=broken):
+            with self.assertRaises(Exception): harvest(store,'r',adapter,{'q':'x'},'a','b',lambda row:None)
+        self.assertEqual(store.sql('SELECT * FROM wl_harvest_seen'),[])
+        self.assertEqual(store.sql("SELECT 1 FROM wl_checkpoints WHERE unit LIKE '%:ingested' OR unit LIKE '%:progress:%'"),[])
+        self.assertEqual(harvest(store,'r',adapter,{'q':'x'},'a','b',lambda row:None)['counts'],{'q':1})
+        self.assertEqual(adapter.calls,1)
+
+    def test_legacy_cached_page_migrates_without_reingestion(self):
+        from pipeline import digest
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        unit='supplement:test:'+digest(['q','x','a','b',None])
+        page={'records':[{'source_id':'a'}],'total':2,'next':'b'}
+        store.sql('INSERT INTO wl_checkpoints VALUES(?,?,?)',('r',unit,json.dumps(page)))
+        store.sql('INSERT INTO wl_checkpoints VALUES(?,?,?)',('r',unit+':ingested','true'))
+        class Adapter:
+            name='test'
+            supports_date_slicing=True
+            def page(self,q,start,end,cursor):
+                self_cursor=cursor
+                if self_cursor!='b': raise AssertionError('legacy first page fetched again')
+                return {'records':[{'source_id':'b'}],'total':2,'next':None}
+        delivered=[]
+        harvest_windowed(store,'r',Adapter(),{'q':'x'},'a','b',delivered.append)
+        self.assertEqual(delivered,[{'source_id':'b'}])
+        self.assertEqual(len(store.sql("SELECT value FROM wl_harvest_seen WHERE value LIKE 'id:%'")),2)
+
+    def test_fresh_window_plan_is_disjoint_complete_and_resumable(self):
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            supports_date_slicing=True
+            fail=True
+            windows=[]
+            def page(self,q,start,end,cursor):
+                self.windows.append((start,end))
+                if start=='2026-01-08' and self.fail: raise TimeoutError()
+                return {'records':[{'source_id':start}],'total':1,'next':None}
+        adapter=Adapter()
+        with self.assertRaises(TimeoutError):
+            harvest_windowed(store,'r',adapter,{'q':'x'},'2026-01-01','2026-01-16',lambda r:None)
+        adapter.fail=False
+        value=harvest_windowed(store,'r',adapter,{'q':'x'},'2026-01-01','2026-01-16',lambda r:None)
+        self.assertEqual(value['counts'],{'q':3})
+        self.assertEqual(adapter.windows.count(('2026-01-01','2026-01-07')),1)
+        parts=value['partitions']['q']
+        self.assertEqual([(p['window_start'],p['window_end']) for p in parts],
+                         [('2026-01-01','2026-01-07'),('2026-01-08','2026-01-14'),('2026-01-15','2026-01-16')])
+        self.assertTrue(all(p['status']=='COMPLETE_FOR_QUERY' for p in parts))
+
     def test_live_count_drift_retires_only_query_snapshot_and_resumes(self):
         store=Store(':memory:'); store.migrate(); self.addCleanup(store.db.close)
         class Adapter:
@@ -25,7 +139,7 @@ class SupplementTests(unittest.TestCase):
         with self.assertRaises(SourceSnapshotChanged):
             harvest(store,'r',adapter,{'q':'x'},'a','b',delivered.append)
         self.assertEqual([x['source_id'] for x in delivered],['a'])
-        self.assertEqual(store.sql("SELECT 1 FROM wl_checkpoints WHERE unit LIKE '%supplement-complete:%' AND unit NOT LIKE '%:snapshot'"),[])
+        self.assertEqual(store.sql("SELECT 1 FROM wl_checkpoints WHERE unit LIKE '%supplement-complete:%' AND unit NOT LIKE '%:snapshot' AND unit NOT LIKE '%:progress:%'"),[])
         old=store.sql("SELECT unit,payload FROM wl_checkpoints WHERE unit LIKE 'supplement:%'")
         adapter.changed=True
         result=harvest(store,'r',adapter,{'q':'x'},'a','b',delivered.append)

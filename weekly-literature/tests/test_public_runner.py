@@ -10,6 +10,16 @@ import public_runner as r
 
 
 class PublicRunnerTest(unittest.TestCase):
+    def test_database_pause_prints_only_allowlisted_resource_counters(self):
+        def worker(mode):
+            raise r.PhaseError('BACKFILL',r.DatabaseBudgetReached({
+                'reads':250012,'writes':100,'read_limit':250000,'write_limit':10000,
+                'private_query':'DO_NOT_PRINT'}))
+        code,out=self.output(worker)
+        self.assertEqual(code,0)
+        self.assertIn('reads=250012 writes=100 read_limit=250000 write_limit=10000',out)
+        self.assertNotIn('DO_NOT_PRINT',out)
+
     def test_publication_never_restarts_pending_backfill_or_finalizes(self):
         audit={'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY},
                'scope':{'policy':r.TRIAGE_POLICY,'coverage':'legacy_queue_retriage_only'}}
