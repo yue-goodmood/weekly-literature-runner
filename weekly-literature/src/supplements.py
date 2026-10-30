@@ -6,6 +6,11 @@ import re
 import time
 import urllib.parse
 import xml.etree.ElementTree as ET
+from pipeline import UpstreamDeferred
+
+
+class SourceSnapshotChanged(UpstreamDeferred):
+    """Old pages are preserved; the next pass starts a separate coherent snapshot."""
 
 
 def plain(value):
@@ -87,18 +92,33 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
         if complete:
             counts[name] = json.loads(complete[0]['payload'])['count']
             continue
+        snapshot_unit = completed_unit+':snapshot'
+        snapshots = store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit=?',
+                              (run,snapshot_unit))
+        generation = json.loads(snapshots[0]['payload'])['generation'] if snapshots else 0
+        # Generation zero intentionally reuses existing checkpoints. Never edit or
+        # delete frozen pages, canonical articles, or immutable medical reviews.
+        page_prefix = '' if generation == 0 else 'snapshot:'+str(generation)+':'
         cursor, seen, used = None, set(), set()
         expected = None
         for page_number in itertools.count():
             if max_pages is not None and page_number >= max_pages:
                 raise ValueError('Source page budget reached; coverage remains partial')
             from pipeline import digest
-            unit = namespace+getattr(adapter, 'checkpoint_namespace', '')+'supplement:'+adapter.name+':'+digest([name, query, start, end, cursor])
+            unit = namespace+getattr(adapter, 'checkpoint_namespace', '')+page_prefix+'supplement:'+adapter.name+':'+digest([name, query, start, end, cursor])
             page = store.checkpoint(run, unit, lambda: adapter.page(query, start, end, cursor))
             if expected is None:
                 expected = page['total']
             if page['total'] != expected:
-                raise ValueError('Source count changed during pagination; coverage remains partial')
+                # A live index may change even inside a fixed date window. Mixing
+                # cached old pages with new pages can never establish coverage.
+                # Retire only this query's snapshot and pause, without claiming
+                # completion or repeatedly fetching within the same process.
+                receipt = {'generation':generation+1, 'reason':'SOURCE_COUNT_CHANGED',
+                           'previous_total':expected, 'observed_total':page['total']}
+                store.sql('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',
+                          (run,snapshot_unit,json.dumps(receipt)))
+                raise SourceSnapshotChanged()
             ingested = store.sql('SELECT 1 FROM wl_checkpoints WHERE run_key=? AND unit=?',(run,unit+':ingested'))
             for article in page['records']:
                 identifier = article['source_id']
@@ -117,7 +137,7 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
             if len(seen) == expected:
                 counts[name] = expected
                 store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
-                          (run,completed_unit,json.dumps({'count':expected})))
+                          (run,completed_unit,json.dumps({'count':expected,'generation':generation})))
                 break
             following = page['next']
             if len(seen) > expected or not page['records'] or following is None or following in used or following == cursor:

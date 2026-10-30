@@ -5,9 +5,35 @@ import unittest
 import urllib.parse
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from pipeline import Store, aliases, run_supplements
-from supplements import EuropePMC, Arxiv, harvest
+from supplements import EuropePMC, Arxiv, harvest, SourceSnapshotChanged
 
 class SupplementTests(unittest.TestCase):
+    def test_live_count_drift_retires_only_query_snapshot_and_resumes(self):
+        store=Store(':memory:'); store.migrate(); self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            changed=False
+            calls=[]
+            def page(self,q,start,end,cursor):
+                self.calls.append(cursor)
+                if not self.changed:
+                    return {'records':[{'source_id':cursor or 'a'}],
+                            'total':2 if cursor is None else 3,'next':'b'}
+                return {'records':[{'source_id':x} for x in ('a','b','c')],
+                        'total':3,'next':None}
+        adapter=Adapter(); delivered=[]
+        with self.assertRaises(SourceSnapshotChanged):
+            harvest(store,'r',adapter,{'q':'x'},'a','b',delivered.append)
+        self.assertEqual([x['source_id'] for x in delivered],['a'])
+        self.assertEqual(store.sql("SELECT 1 FROM wl_checkpoints WHERE unit LIKE '%supplement-complete:%' AND unit NOT LIKE '%:snapshot'"),[])
+        old=store.sql("SELECT unit,payload FROM wl_checkpoints WHERE unit LIKE 'supplement:%'")
+        adapter.changed=True
+        result=harvest(store,'r',adapter,{'q':'x'},'a','b',delivered.append)
+        self.assertEqual(result['counts'],{'q':3})
+        self.assertEqual(adapter.calls,[None,'b',None])
+        self.assertEqual(store.sql("SELECT unit,payload FROM wl_checkpoints WHERE unit LIKE 'supplement:%'"),old)
+        self.assertEqual(len(store.sql("SELECT 1 FROM wl_checkpoints WHERE unit LIKE 'snapshot:1:supplement:%'")),2)
+
     def test_completed_query_resume_is_one_read_not_full_page_replay(self):
         from unittest.mock import patch
         store=Store(':memory:'); store.migrate(); self.addCleanup(store.db.close)
