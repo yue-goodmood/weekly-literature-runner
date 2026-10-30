@@ -220,7 +220,9 @@ def safe_main(mode, worker=execute):
     except BaseException as exc:
         cause = exc.cause if isinstance(exc, PhaseError) else exc
         if isinstance(cause, (WorkBudgetReached, UpstreamDeferred, DatabaseBudgetReached)):
-            label = ('PAUSED_D1_RUN_BUDGET' if isinstance(cause, DatabaseBudgetReached) else
+            from supplements import SourceSnapshotChanged
+            label = ('PAUSED_SOURCE_SNAPSHOT_CHANGED' if isinstance(cause, SourceSnapshotChanged) else
+                     'PAUSED_D1_RUN_BUDGET' if isinstance(cause, DatabaseBudgetReached) else
                      'PAUSED_WORK_BUDGET' if isinstance(cause, WorkBudgetReached) else
                      'PAUSED_UPSTREAM_COOLDOWN')
             print('weekly-literature: '+label)

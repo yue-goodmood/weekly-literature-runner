@@ -7,7 +7,7 @@ final publication is blocked until the backfill has completed.
 import json
 from pipeline import (TRIAGE_POLICY, digest, search_split, ingest_articles,
                       select_candidates, score)
-from supplements import harvest
+from supplements import harvest, SourceSnapshotChanged
 
 PREFIX='backfill:'+TRIAGE_POLICY+':v1:'
 
@@ -19,6 +19,12 @@ def cached(store,run,unit):
 
 def save(store,run,unit,value):
     store.sql('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',(run,PREFIX+unit,json.dumps(value)))
+
+
+def source_progress(store,run,name,value):
+    """Expose source receipts immediately, without rewriting original ETL audit."""
+    store.sql("UPDATE wl_runs SET audit=json_set(audit, ?, json(?)) WHERE run_key=?",
+              ('$.scope.backfill.sources.'+json.dumps(name),json.dumps(value),run))
 
 
 def needed(state):
@@ -66,11 +72,14 @@ def resume(store,run,config,pubmed,adapters):
     result={}
     for name,settings in plan['sources'].items():
         if settings.get('status')=='NOT_ATTEMPTED':
-            result[name]={'status':'NOT_ATTEMPTED'};continue
+            result[name]={'status':'NOT_ATTEMPTED'}
+            source_progress(store,run,name,result[name]);continue
         complete=cached(store,run,'source:'+name)
         if complete:
-            result[name]=complete;continue
+            result[name]=complete
+            source_progress(store,run,name,complete);continue
         start,end=settings['window_start'],settings['window_end']
+        source_progress(store,run,name,{'status':'RUNNING','window_start':start,'window_end':end})
         if name=='PubMed':
             ids=set()
             for label,query in settings['queries'].items():
@@ -95,10 +104,16 @@ def resume(store,run,config,pubmed,adapters):
                       'window_start':start,'window_end':end}
         else:
             if name not in adapters: raise ValueError('Backfill adapter unavailable')
-            complete=harvest(store,run,adapters[name],settings['queries'],start,end,
-                lambda article:ingest_articles(store,run,[article]),None,
-                ingest_many=lambda records:ingest_articles(store,run,records),namespace=PREFIX)
+            try:
+                complete=harvest(store,run,adapters[name],settings['queries'],start,end,
+                    lambda article:ingest_articles(store,run,[article]),None,
+                    ingest_many=lambda records:ingest_articles(store,run,records),namespace=PREFIX)
+            except SourceSnapshotChanged:
+                source_progress(store,run,name,{'status':'PARTIAL',
+                    'reason':'SNAPSHOT_RESTART_PENDING','window_start':start,'window_end':end})
+                raise
         save(store,run,'source:'+name,complete)
+        source_progress(store,run,name,complete)
         result[name]=complete
     # Original ETL configuration, windows and source audit remain untouched.
     counts=select_candidates(store,run,None)

@@ -81,5 +81,16 @@ class BackfillTest(unittest.TestCase):
         self.assertEqual(set(plan['sources']['Europe PMC']['queries']),{'digestive_pelvic'})
         self.assertEqual(set(plan['sources']['arXiv']['queries']),{'digestive_ai'})
 
+    def test_completed_source_is_audited_before_later_source_failure(self):
+        def fail(*args): raise TimeoutError()
+        self.epmc.page=fail
+        with self.assertRaises(TimeoutError): self.run_backfill()
+        audit=json.loads(self.store.sql('SELECT audit FROM wl_runs')[0]['audit'])
+        progress=audit['scope']['backfill']
+        self.assertEqual(progress['status'],'RUNNING')
+        self.assertEqual(progress['sources']['PubMed']['status'],'COMPLETE_FOR_QUERY')
+        self.assertEqual(progress['sources']['Europe PMC']['status'],'RUNNING')
+        self.assertEqual(audit['supplementary_sources'],self.audit['supplementary_sources'])
+
 
 if __name__=='__main__': unittest.main()
