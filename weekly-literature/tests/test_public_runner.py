@@ -10,7 +10,7 @@ import public_runner as r
 
 
 class PublicRunnerTest(unittest.TestCase):
-    def test_existing_analysis_delivered_before_backfill_and_no_finalization(self):
+    def test_publication_never_restarts_pending_backfill_or_finalizes(self):
         audit={'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY},
                'scope':{'policy':r.TRIAGE_POLICY,'coverage':'legacy_queue_retriage_only'}}
         class Store:
@@ -21,9 +21,16 @@ class PublicRunnerTest(unittest.TestCase):
                          'selected':10,'analyzed':10}]
         order=[];env={k:'test' for k in r.REQUIRED};env['ENABLE_PRODUCTION']='true'
         with patch.dict(os.environ,env),patch.object(r,'sync_partial',side_effect=lambda *a:order.append('deliver') or False), \
-             patch('backfill.resume',side_effect=lambda *a:order.append('backfill')),patch.object(r,'publish') as final:
-            self.assertEqual(r.execute('publish',Store()),'BACKFILL_COMPLETED')
-        self.assertEqual(order,['deliver','backfill']);final.assert_not_called()
+             patch('backfill.resume') as backfill,patch.object(r,'publish') as final:
+            self.assertEqual(r.execute('publish',Store()),'AWAITING_BACKFILL')
+        self.assertEqual(order,['deliver']);final.assert_not_called();backfill.assert_not_called()
+
+    def test_snapshot_pause_is_not_completion_and_exposes_no_payload(self):
+        from supplements import SourceSnapshotChanged
+        def worker(mode): raise r.PhaseError('BACKFILL',SourceSnapshotChanged('PRIVATE_QUERY'))
+        code,out=self.output(worker)
+        self.assertEqual(code,0)
+        self.assertEqual(out,'weekly-literature: PAUSED_SOURCE_SNAPSHOT_CHANGED\n')
 
     def test_complete_analysis_waits_for_all_notion_batches(self):
         class Store:

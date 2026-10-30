@@ -140,7 +140,7 @@ def execute(mode, store=None, today=None):
             except Exception as exc:
                 raise PhaseError('ETL', exc) from None
     if mode in ('publish', 'scheduled'):
-        from backfill import needed, resume
+        from backfill import needed
         config=json.loads((ROOT/'config/topics.json').read_text())
         rows = store.sql(f"""
             SELECT r.run_key,r.audit,r.status,
@@ -180,17 +180,13 @@ def execute(mode, store=None, today=None):
                     changed = True
                 if changed:
                     store.sql("UPDATE wl_runs SET audit=json_remove(audit,'$.delivery_diagnostic') WHERE run_key=?",(row['run_key'],))
-                # Deliver already analysed evidence before spending this run's
-                # remaining budget on supplemental retrieval. Never finalize a
-                # batch while an approved backfill is pending or running.
+                # Publication is independent of retrieval: a source cooldown,
+                # snapshot restart or retrieval budget must not prevent delivery
+                # of already reviewed evidence. Only etl/scheduled resumes sources.
+                # Never finalize while the approved scope backfill is pending.
                 state=store.sql('SELECT * FROM wl_runs WHERE run_key=?',(row['run_key'],))[0]
                 if config.get('backfill_existing_windows') and needed(state):
-                    try:
-                        resume(store,row['run_key'],config,PubMed(),
-                               {'Europe PMC':EuropePMC(request),'arXiv':Arxiv(request)})
-                    except Exception as exc:
-                        raise PhaseError('BACKFILL',exc) from None
-                    return 'BACKFILL_COMPLETED'
+                    return 'PARTIAL_SYNC_VERIFIED' if changed else 'AWAITING_BACKFILL'
                 if row['selected'] == row['analyzed']:
                     if has_unsynced(store, row['run_key']):
                         return 'PARTIAL_SYNC_VERIFIED'
@@ -212,7 +208,7 @@ def safe_main(mode, worker=execute):
         allowed = {'DISABLED', 'READY', 'RETRIAGED', 'ETL_CHECKPOINTED',
                    'PUBLICATION_VERIFIED', 'AWAITING_REVIEW', 'NO_PENDING_PUBLICATION',
                    'PARTIAL_SYNC_VERIFIED',
-                   'NO_PENDING_ETL','BACKFILL_COMPLETED'}
+                   'NO_PENDING_ETL','BACKFILL_COMPLETED','AWAITING_BACKFILL'}
         if status not in allowed:
             raise ConfigurationError()
         print('weekly-literature: '+status)
