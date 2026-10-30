@@ -41,7 +41,7 @@ class PublicRunnerTest(unittest.TestCase):
                     'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY}}),
                     'selected':1000,'analyzed':1000}]
         env={key:'test' for key in r.REQUIRED}; env['ENABLE_PRODUCTION']='true'
-        with patch.dict(os.environ,env), patch.object(r,'sync_partial',return_value=True), \
+        with patch.dict(os.environ,env), patch.object(r,'sync_partial',side_effect=[True,False]), \
              patch.object(r,'has_unsynced',return_value=True), patch.object(r,'publish') as publish:
             self.assertEqual(r.execute('publish',Store()),'PARTIAL_SYNC_VERIFIED')
             publish.assert_not_called()
@@ -168,10 +168,24 @@ class PublicRunnerTest(unittest.TestCase):
                 return [{'run_key':'private-run','audit':json.dumps({'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY}}), 'selected':2, 'analyzed':1}]
         env = {key:'private-value' for key in r.REQUIRED}
         env['ENABLE_PRODUCTION'] = 'true'
-        with patch.dict(os.environ, env), patch.object(r,'publish') as publish, patch.object(r,'sync_partial',return_value=True) as sync:
+        with patch.dict(os.environ, env), patch.object(r,'publish') as publish, patch.object(r,'sync_partial',side_effect=[True]*6+[False]) as sync:
             self.assertEqual(r.execute('publish', Store()), 'PARTIAL_SYNC_VERIFIED')
-            self.assertEqual(sync.call_count,4)
+            self.assertEqual(sync.call_count,7)
             publish.assert_not_called()
+
+    def test_delivery_checks_work_budget_before_starting_each_batch(self):
+        class Store:
+            def migrate(self): pass
+            def sql(self,sql,*args):
+                if 'SELECT payload' in sql or 'SELECT run_key,audit' in sql: return []
+                return [{'run_key':'private-run','status':'READY','audit':json.dumps({
+                    'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY}}),
+                    'selected':1000,'analyzed':1000}]
+        env={k:'test' for k in r.REQUIRED};env['ENABLE_PRODUCTION']='true'
+        with patch.dict(os.environ,env),patch.object(r,'check_budget',side_effect=[None,r.WorkBudgetReached()]), \
+             patch.object(r,'sync_partial',return_value=True) as sync:
+            with self.assertRaises(r.WorkBudgetReached): r.execute('publish',Store())
+            self.assertEqual(sync.call_count,1)
 
     def test_oldest_etl_resumes_with_its_original_frozen_config(self):
         frozen={'version':'old','queries':{}}
