@@ -7,7 +7,7 @@ final publication is blocked until the backfill has completed.
 import json
 from pipeline import (TRIAGE_POLICY, digest, search_split, ingest_articles,
                       select_candidates, score)
-from supplements import harvest, SourceSnapshotChanged
+from supplements import harvest_windowed, SourceSnapshotChanged
 
 PREFIX='backfill:'+TRIAGE_POLICY+':v1:'
 
@@ -105,8 +105,8 @@ def resume(store,run,config,pubmed,adapters):
         else:
             if name not in adapters: raise ValueError('Backfill adapter unavailable')
             try:
-                complete=harvest(store,run,adapters[name],settings['queries'],start,end,
-                    lambda article:ingest_articles(store,run,[article]),None,
+                complete=harvest_windowed(store,run,adapters[name],settings['queries'],start,end,
+                    lambda article:ingest_articles(store,run,[article]),
                     ingest_many=lambda records:ingest_articles(store,run,records),namespace=PREFIX)
             except SourceSnapshotChanged:
                 source_progress(store,run,name,{'status':'PARTIAL',

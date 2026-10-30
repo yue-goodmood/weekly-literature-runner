@@ -14,7 +14,7 @@ ALLOWED.update('weekly-literature/src/'+name+'.py' for name in (
     'retune_queue','recover','public_runner','partial_publish','layout_upgrade','backfill'))
 ALLOWED.update('weekly-literature/tests/test_'+name+'.py' for name in (
     'pipeline','publish','report_format','retune_queue','supplements','public_runner','partial_publish','backfill'))
-ALLOWED.update('weekly-literature/migrations/000'+str(n)+'.sql' for n in range(1,6))
+ALLOWED.update('weekly-literature/migrations/000'+str(n)+'.sql' for n in range(1,7))
 
 
 def audit():

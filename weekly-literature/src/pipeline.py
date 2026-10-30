@@ -30,6 +30,9 @@ class UpstreamDeferred(Exception):
 
 class DatabaseBudgetReached(Exception):
     """Per-process D1 allowance consumed; not a claim about account quota."""
+    def __init__(self, usage=None):
+        self.usage = usage
+        super().__init__()
 
 @contextlib.contextmanager
 def work_budget(seconds):
@@ -176,7 +179,8 @@ class Store:
         if self.quota_exhausted:
             raise RuntimeError('D1_DAILY_QUOTA_EXCEEDED')
         if self.rows_read >= self.row_read_budget or self.rows_written >= self.row_write_budget:
-            raise DatabaseBudgetReached()
+            raise DatabaseBudgetReached({'reads':self.rows_read,'writes':self.rows_written,
+                'read_limit':self.row_read_budget,'write_limit':self.row_write_budget})
         try:
             result = json.loads(request(self.url, json.dumps(body).encode(), self.headers))
             details = result.get('errors') or [r.get('error') for r in result.get('result', [])]
@@ -373,10 +377,14 @@ def ingest_articles(store, key, articles):
     statements = []
     payloads = {}
     evidence_names = sorted(set(known.values()))
+    analyzed = set()
     for offset in range(0, len(evidence_names), 90):
         group = evidence_names[offset:offset+90]
         payloads.update((r['evidence_key'], json.loads(r['payload'])) for r in store.sql(
             'SELECT evidence_key,payload FROM wl_articles WHERE evidence_key IN (' + ','.join('?' for _ in group) + ')', group))
+        analyzed.update(r['evidence_key'] for r in store.sql(
+            'SELECT DISTINCT evidence_key FROM wl_analysis WHERE evidence_key IN ('+
+            ','.join('?' for _ in group)+')',group))
     for article in articles:
         article_names = aliases(article)
         matches = {known[name] for name in article_names if name in known}
@@ -402,7 +410,7 @@ def ingest_articles(store, key, articles):
             evidence = article_names[0]
         existing = payloads.get(evidence)
         resolved = authoritative_upgrade(existing, article)
-        if existing and resolved != existing and store.sql('SELECT 1 FROM wl_analysis WHERE evidence_key=? LIMIT 1', (evidence,)):
+        if existing and resolved != existing and evidence in analyzed:
             # Preserve evidence already cited by immutable analyses. A canonical
             # upgrade requires explicit review, but must not block other papers.
             unit = 'metadata:upgrade-pending:'+digest([evidence,resolved])
@@ -421,7 +429,7 @@ def ingest_articles(store, key, articles):
             statements.append(('INSERT OR IGNORE INTO wl_aliases VALUES(?,?)', (alias, evidence)))
         value = score(resolved)
         if value:
-            statements.append(('INSERT INTO wl_candidates SELECT ?,?,?,0 WHERE NOT EXISTS (SELECT 1 FROM wl_history WHERE evidence_key=?) ON CONFLICT(run_key,evidence_key) DO UPDATE SET score=excluded.score WHERE NOT EXISTS (SELECT 1 FROM wl_analysis WHERE run_key=? AND evidence_key=?)', (key,evidence,value,evidence,key,evidence)))
+            statements.append(('INSERT INTO wl_candidates SELECT ?,?,?,0 WHERE NOT EXISTS (SELECT 1 FROM wl_history WHERE evidence_key=?) ON CONFLICT(run_key,evidence_key) DO UPDATE SET score=excluded.score WHERE wl_candidates.score<>excluded.score AND NOT EXISTS (SELECT 1 FROM wl_analysis WHERE run_key=? AND evidence_key=?)', (key,evidence,value,evidence,key,evidence)))
     store.batch(statements)
 
 

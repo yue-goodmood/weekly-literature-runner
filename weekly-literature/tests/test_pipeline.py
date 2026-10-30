@@ -21,6 +21,21 @@ class Source:
             ('1','Rectal cancer organ preservation','10.1/test'),('2','Rectal cancer duplicate','https://doi.org/10.1/TEST.'),('3','Diabetes medication','10.1/other')]]
 
 class PipelineTest(unittest.TestCase):
+    def test_unchanged_candidate_reingestion_writes_no_rows(self):
+        article={'pmid':'77','title':'Rectal cancer clinical cohort','abstract':'40 patients'}
+        p.ingest_articles(self.store,'r',[article])
+        before=self.store.db.total_changes
+        p.ingest_articles(self.store,'r',[article])
+        self.assertEqual(self.store.db.total_changes,before)
+
+    def test_harvest_identity_probe_uses_covering_primary_key(self):
+        detail=' '.join(r['detail'] for r in self.store.sql(
+            'EXPLAIN QUERY PLAN SELECT value FROM wl_harvest_seen '
+            'WHERE run_key=? AND scan_key=? AND value IN (SELECT value FROM json_each(?))',
+            ('r','s','["id:a"]')))
+        self.assertIn('SEARCH wl_harvest_seen',detail)
+        self.assertNotIn('SCAN wl_harvest_seen',detail)
+
     def test_cross_run_analysis_identity_lookup_uses_index_not_history_scan(self):
         plan=self.store.sql('EXPLAIN QUERY PLAN SELECT 1 FROM wl_analysis WHERE evidence_key=? LIMIT 1',('test',))
         detail=' '.join(row['detail'] for row in plan)
