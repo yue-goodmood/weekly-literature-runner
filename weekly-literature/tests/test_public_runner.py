@@ -3,6 +3,7 @@ import datetime as dt
 import io
 import json
 import os
+import tempfile
 import unittest
 import urllib.error
 from unittest.mock import patch
@@ -10,6 +11,13 @@ import public_runner as r
 
 
 class PublicRunnerTest(unittest.TestCase):
+    def setUp(self):
+        # Existing phase tests isolate orchestration; ledger integration below
+        # exercises real SQLite receipts, crashes, UTC rollover and exhaustion.
+        reservation=patch.object(r,'reserve_retrieval',return_value=True)
+        reservation.start()
+        self.addCleanup(reservation.stop)
+
     def test_database_pause_prints_only_allowlisted_resource_counters(self):
         def worker(mode):
             raise r.PhaseError('BACKFILL',r.DatabaseBudgetReached({
@@ -256,5 +264,83 @@ class PublicRunnerTest(unittest.TestCase):
         code,out=self.output(worker)
         self.assertEqual(code,1)
         self.assertEqual(out,'weekly-literature: D1_DAILY_QUOTA_EXCEEDED\n')
+
+
+class RetrievalRecoveryTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.addCleanup(self.tmp.cleanup)
+        self.path=self.tmp.name+'/ledger.db'
+        self.store=r.Store(self.path);self.addCleanup(self.store.db.close)
+        self.store.migrate()
+        self.now=dt.datetime(2026,11,2,23,59,tzinfo=dt.timezone.utc)
+        env={key:'test' for key in r.REQUIRED};env['ENABLE_PRODUCTION']='true'
+        change=patch.dict(os.environ,env);change.start();self.addCleanup(change.stop)
+
+    def test_slots_survive_restart_and_crash_without_refund(self):
+        self.assertTrue(r.reserve_retrieval(self.store,self.now))
+        restarted=r.Store(self.path);self.addCleanup(restarted.db.close)
+        self.assertTrue(r.reserve_retrieval(restarted,self.now))
+        self.assertTrue(r.reserve_retrieval(restarted,self.now))
+        self.assertFalse(r.reserve_retrieval(self.store,self.now))
+
+    def test_utc_reset_and_environment_cannot_raise_budgets(self):
+        self.store.row_read_budget=9999999;self.store.row_write_budget=9999999
+        for _ in range(3): self.assertTrue(r.reserve_retrieval(self.store,self.now))
+        self.assertEqual((self.store.row_read_budget,self.store.row_write_budget),(250000,10000))
+        self.assertFalse(r.reserve_retrieval(self.store,self.now))
+        self.assertTrue(r.reserve_retrieval(self.store,self.now+dt.timedelta(minutes=1)))
+
+    def count_slots(self):
+        return self.store.sql("SELECT count(*) AS n FROM wl_checkpoints WHERE run_key LIKE 'system:retrieval-budget:%'")[0]['n']
+
+    def seed(self):
+        self.store.sql('INSERT INTO wl_runs VALUES(?,?,?,?,?,?)',('synthetic','hash','2026-09-28','2026-10-18','READY',json.dumps({
+            'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY},
+            'scope':{'policy':r.TRIAGE_POLICY,'coverage':'legacy_queue_retriage_only'}})))
+
+    def test_idle_recovery_never_creates_new_week_or_consumes_slot(self):
+        with patch.object(r,'run_etl') as etl:
+            self.assertEqual(r.execute('recovery',self.store),'NO_PENDING_PUBLICATION')
+        etl.assert_not_called();self.assertEqual(self.count_slots(),0)
+
+    def test_daily_exhaustion_prevents_retrieval(self):
+        self.seed()
+        for _ in range(3): self.assertTrue(r.reserve_retrieval(self.store))
+        with patch('backfill.resume') as resume,patch.object(r,'run_etl') as etl:
+            self.assertEqual(r.execute('recovery',self.store),'PAUSED_RETRIEVAL_DAILY_BUDGET')
+        resume.assert_not_called();etl.assert_not_called()
+
+    def test_completion_checks_publication_with_same_store_and_one_slot(self):
+        self.seed();calls=[]
+        def complete(store,run,*args):
+            calls.append(store)
+            audit={'review_policy':'clinical-signal-unlimited-v1','triage':{'policy':r.TRIAGE_POLICY}}
+            store.sql('UPDATE wl_runs SET audit=? WHERE run_key=?',(json.dumps(audit),run))
+        with patch('backfill.resume',side_effect=complete),patch.object(r,'sync_partial',return_value=False), \
+             patch.object(r,'has_unsynced',return_value=False),patch.object(r,'publish') as publish,patch.object(r,'finish_progress'):
+            self.assertEqual(r.execute('recovery',self.store),'PUBLICATION_VERIFIED')
+        self.assertEqual(calls,[self.store]);publish.assert_called_once_with(self.store,'synthetic')
+        self.assertEqual(self.count_slots(),1)
+
+    def test_budget_pause_preserves_slot_and_does_not_retry(self):
+        self.seed()
+        with patch('backfill.resume',side_effect=r.DatabaseBudgetReached()) as resume:
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                code=r.safe_main('recovery',lambda mode:r.execute(mode,self.store))
+        self.assertEqual(code,0);self.assertIn('PAUSED_D1_RUN_BUDGET',out.getvalue())
+        resume.assert_called_once();self.assertEqual(self.count_slots(),1)
+
+    def test_daily_quota_immediately_stops_without_publication(self):
+        self.seed()
+        with patch('backfill.resume',side_effect=RuntimeError('D1_DAILY_QUOTA_EXCEEDED')) as resume,patch.object(r,'publish') as publish:
+            with self.assertRaises(r.PhaseError): r.execute('recovery',self.store)
+        resume.assert_called_once();publish.assert_not_called()
+
+    def test_workflow_routes_and_serialization(self):
+        workflow=(r.ROOT.parent/'.github/workflows/literature.yml').read_text()
+        self.assertIn("cron: '15 4,10,14 * * *'",workflow)
+        self.assertIn("github.event_name == 'push' && 'recovery'",workflow)
+        self.assertIn('cancel-in-progress: false',workflow)
+        self.assertNotIn('actions: write',workflow)
 
 
