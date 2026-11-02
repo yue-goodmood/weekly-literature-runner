@@ -82,10 +82,34 @@ def strict(audit):
             audit.get('triage', {}).get('policy') == TRIAGE_POLICY)
 
 
-def execute(mode, store=None, today=None):
+def reserve_retrieval(store, now=None):
+    """At most three retrieval attempts per UTC day, including manual/push runs.
+
+    Charge a full slot before work, even on crash. Indexed D1 receipts survive
+    runners; no self-dispatch, refunded slots, or account-quota assumptions.
+    Each slot keeps the existing 10k-write/250k-read process guard; allow 5k
+    write headroom per slot because one remote batch may cross that guard.
+    Publication and assistant analysis remain independent of these slots.
+    """
+    day=(now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc).date()
+    key='system:retrieval-budget:'+day.isoformat()
+    for slot in range(3):
+        unit='slot:'+str(slot)
+        rows=store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?) RETURNING unit',
+                       (key,unit,json.dumps({'read_budget':250000,'write_budget':10000,
+                                           'write_headroom':5000})))
+        if rows:
+            # Never let a workflow environment override increase these limits.
+            store.row_read_budget=min(store.row_read_budget,250000)
+            store.row_write_budget=min(store.row_write_budget,10000)
+            return True
+    return False
+
+
+def execute(mode, store=None, today=None, _reserved=False):
     if os.environ.get('ENABLE_PRODUCTION') != 'true':
         return 'DISABLED'
-    needed = REQUIRED if mode in ('readiness', 'publish', 'scheduled') else REQUIRED[:3]
+    needed = REQUIRED if mode in ('readiness', 'publish', 'scheduled', 'recovery') else REQUIRED[:3]
     if any(not os.environ.get(key, '').strip() for key in needed):
         raise ConfigurationError()
     store = store if store is not None else Store()
@@ -105,6 +129,24 @@ def execute(mode, store=None, today=None):
             raise PhaseError('NOTION', exc) from None
         return 'READY'
     store.migrate()
+    if mode in ('etl','scheduled','recovery'):
+        # Recovery checks must not start a new week's retrieval. Only the
+        # original ETL trigger (or explicit ETL request) may create a batch.
+        if mode=='recovery':
+            from backfill import needed as backfill_needed
+            config=json.loads((ROOT/'config/topics.json').read_text())
+            pending=store.sql("SELECT * FROM wl_runs WHERE status IN ('ETL','READY') ORDER BY run_key")
+            if not any(row['status']=='ETL' or not strict(json.loads(row['audit'])) or
+                       (config.get('backfill_existing_windows') and backfill_needed(row))
+                       for row in pending):
+                return execute('publish',store,today)
+        if not _reserved and not reserve_retrieval(store):
+            return 'PAUSED_RETRIEVAL_DAILY_BUDGET'
+        if mode=='recovery':
+            result=execute('etl',store,today,_reserved=True)
+            # Backfill completion is not final publication; publication keeps
+            # all coverage/medical-review/readback gates and the SAME budget.
+            return execute('publish',store,today) if result=='BACKFILL_COMPLETED' else result
     # Repair oldest legacy queue BEFORE spending quota on a new retrieval run.
     for row in (store.sql("SELECT run_key,audit FROM wl_runs WHERE status='READY' ORDER BY run_key")
                 if mode in ('etl','scheduled','publish') else []):
@@ -209,7 +251,8 @@ def safe_main(mode, worker=execute):
         allowed = {'DISABLED', 'READY', 'RETRIAGED', 'ETL_CHECKPOINTED',
                    'PUBLICATION_VERIFIED', 'AWAITING_REVIEW', 'NO_PENDING_PUBLICATION',
                    'PARTIAL_SYNC_VERIFIED',
-                   'NO_PENDING_ETL','BACKFILL_COMPLETED','AWAITING_BACKFILL'}
+                   'NO_PENDING_ETL','BACKFILL_COMPLETED','AWAITING_BACKFILL',
+                   'PAUSED_RETRIEVAL_DAILY_BUDGET'}
         if status not in allowed:
             raise ConfigurationError()
         print('weekly-literature: '+status)
@@ -261,7 +304,7 @@ def safe_main(mode, worker=execute):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=('readiness','etl','publish','scheduled'), default='readiness')
+    parser.add_argument('--mode', choices=('readiness','etl','publish','scheduled','recovery'), default='readiness')
     raise SystemExit(safe_main(parser.parse_args().mode))
 
 
