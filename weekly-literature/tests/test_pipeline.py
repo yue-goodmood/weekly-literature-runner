@@ -88,6 +88,33 @@ class PipelineTest(unittest.TestCase):
             self.assertRaises(p.DatabaseBudgetReached, store.sql, 'SELECT 1')
             self.assertEqual(send.call_count, 1)
 
+    def test_usage_settlement_reserve_never_resets_or_exceeds_process_counters(self):
+        with patch.dict(p.os.environ, {'CLOUDFLARE_ACCOUNT_ID':'example',
+              'LITERATURE_D1_ID':'example','CLOUDFLARE_API_TOKEN':'test'}): store=p.Store()
+        store.row_write_budget=9900;store.accounting_limits=(250000,10000);store.rows_written=9950
+        result={'success':True,'result':[{'success':True,'results':[],
+                'meta':{'rows_read':1,'rows_written':1}}]}
+        with patch.object(p,'request',return_value=json.dumps(result).encode()) as send:
+            with self.assertRaises(p.DatabaseBudgetReached): store.sql('SELECT 1')
+            send.assert_not_called()
+            store.settling_budget=True
+            store.sql('UPDATE ledger')
+            store.settling_budget=False
+            self.assertEqual(store.rows_written,9951)
+            with self.assertRaises(p.DatabaseBudgetReached): store.sql('SELECT 2')
+            self.assertEqual(send.call_count,1)
+            store.quota_exhausted=True;store.settling_budget=True
+            with self.assertRaisesRegex(RuntimeError,'D1_DAILY_QUOTA_EXCEEDED'): store.sql('UPDATE ledger')
+            self.assertEqual(send.call_count,1)
+
+    def test_utc_rollover_requires_new_retrieval_reservation_before_work(self):
+        with patch.dict(p.os.environ, {'CLOUDFLARE_ACCOUNT_ID':'example',
+              'LITERATURE_D1_ID':'example','CLOUDFLARE_API_TOKEN':'test'}): store=p.Store()
+        store.retrieval_day='2000-01-01'
+        with patch.object(p,'request') as send:
+            with self.assertRaises(p.WorkBudgetReached): store.sql('SELECT 1')
+        send.assert_not_called()
+
     def test_schema_manifest_avoids_repeated_ddl(self):
         with patch.object(self.store, 'sql', wraps=self.store.sql) as sql:
             self.store.migrate()

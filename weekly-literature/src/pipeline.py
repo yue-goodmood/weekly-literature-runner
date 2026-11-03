@@ -162,6 +162,7 @@ def request(url, data=None, headers=None):
 class Store:
     def __init__(self, local=None):
         self.quota_exhausted = False
+        self.usage_complete = True
         self.rows_read = self.rows_written = 0
         self.row_read_budget = int(os.environ.get('D1_RUN_READ_BUDGET', '250000'))
         self.row_write_budget = int(os.environ.get('D1_RUN_WRITE_BUDGET', '10000'))
@@ -178,16 +179,25 @@ class Store:
     def remote(self, body):
         if self.quota_exhausted:
             raise RuntimeError('D1_DAILY_QUOTA_EXCEEDED')
-        if self.rows_read >= self.row_read_budget or self.rows_written >= self.row_write_budget:
+        day=getattr(self,'retrieval_day',None)
+        if day and not getattr(self,'settling_budget',False) and dt.datetime.now(dt.timezone.utc).date().isoformat()!=day:
+            raise WorkBudgetReached()  # Renew a lease after UTC rollover, not against yesterday's balance.
+        limits=getattr(self,'accounting_limits',None) if getattr(self,'settling_budget',False) else None
+        read_limit,write_limit=limits or (self.row_read_budget,self.row_write_budget)
+        if self.rows_read >= read_limit or self.rows_written >= write_limit:
             raise DatabaseBudgetReached({'reads':self.rows_read,'writes':self.rows_written,
-                'read_limit':self.row_read_budget,'write_limit':self.row_write_budget})
+                'read_limit':read_limit,'write_limit':write_limit})
         try:
             result = json.loads(request(self.url, json.dumps(body).encode(), self.headers))
             details = result.get('errors') or [r.get('error') for r in result.get('result', [])]
             if d1_daily_quota(json.dumps(details)):
                 raise RuntimeError('D1_DAILY_QUOTA_EXCEEDED')
+            if not result.get('result'):
+                self.usage_complete=False
             for statement in result.get('result', []):
                 meta = statement.get('meta') or {}
+                if any(type(meta.get(key)) is not int or meta[key]<0 for key in ('rows_read','rows_written')):
+                    self.usage_complete=False  # Missing measurements cannot refund a daily reservation.
                 self.rows_read += int(meta.get('rows_read', 0))
                 self.rows_written += int(meta.get('rows_written', 0))
             return result
