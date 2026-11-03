@@ -129,11 +129,19 @@ count, uniqueness and cursor checks remain mandatory; no partial snapshot gets
 a completion receipt. Backfill audits expose each completed source immediately
 rather than waiting for every source to finish.
 
-Source resumes now use a durable next-page pointer and an indexed source-ID /
-cursor ledger. The ledger, page ingestion marker and next pointer are committed
-in one small batch, so a crash cannot advance past an uncommitted page. Legacy
-frozen pages migrate once without another download or medical analysis. Normal
-resumes do not reload all earlier page payloads just to rebuild in-memory sets.
+Source resumes use a durable next-page pointer and compact exact-ID/cursor page
+receipts. Writing one indexed row per upstream ID was exhausting local write
+budgets even for irrelevant records. The compact ledger, ingestion marker and
+next pointer now commit in one small batch; a crash cannot advance past an
+uncommitted page. Resume reads identity-only receipts once into an exact set,
+never old abstracts or saved analyses. Legacy indexed IDs migrate once into
+bounded 1,000-value chunks, with a ready marker committed last; old rows and
+frozen source pages are preserved. Partial migrations retry safely. An indexed
+range reads these receipts, and identity count must match the saved cursor.
+No probabilistic filters, hash-collision shortcuts or weaker duplicate/count
+checks replace the original guarantees. A 500-record pagination regression test
+requires at most 30 SQLite row changes for retrieval bookkeeping, excluding
+actual article ingestion, rather than at least 500 per-ID inserts.
 
 Fresh historical supplementary queries freeze disjoint date partitions of at
 most seven days, covering the original window without gaps or a result cap.
