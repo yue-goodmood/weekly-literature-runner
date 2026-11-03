@@ -218,15 +218,27 @@ with the SAME process budget and all coverage/review/readback gates intact.
 Idle recovery only checks delivery. Documentation/test-only changes do not
 trigger production. There is no self-dispatch or busy-waiting runner.
 
-ETL/scheduled/recovery share indexed D1 UTC-day receipts: at most three retrieval
-attempts per day, including manual runs and deployment. A slot is reserved before
-work and never refunded on crash. Each keeps the 10,000-write/250,000-read guard,
-plus 5,000-write planning headroom: 45,000 planned daily retrieval writes. This
-is not an exact account-wide cap: a batch can overshoot and other services,
-publication and assistant analysis share quota. Exhausted slots return
-`PAUSED_RETRIEVAL_DAILY_BUDGET`; a later scheduled check resumes after UTC rollover.
-Daily D1 quota errors stop immediately, without retry in the same process.
-Publication is independent of retrieval slots.
+ETL/scheduled/recovery share atomic D1 usage leases, not a fixed attempt count.
+Retrieval's UTC-day planning cap is 3,000,000 reads and 60,000 writes, leaving
+nominal headroom against the [Free allowance](https://developers.cloudflare.com/d1/platform/pricing/)
+for analysis, delivery and other services. Admission reserves up to 350,000 reads
+and 15,000 writes (including single-query headroom). A single INSERT-SELECT with
+RETURNING prevents concurrent admissions spending the same balance. Remaining
+capacity can grant a smaller allowance; cheap completed attempts can run more
+than three times. Finalization replaces the reservation with measured D1
+metadata plus ten rows of bookkeeping headroom, releasing unused capacity.
+
+Process work pauses 100 rows before its existing 250,000-read/10,000-write ceiling
+to reserve one bounded settlement. Counters are never reset to settle usage.
+Missing metadata, crash, expired time budget or an oversized final call keeps
+the conservative reservation; no claimed refund of unknown usage. Old slot
+receipts remain counted at their original conservative allowance. No accounting
+call is attempted after an actual D1 daily-quota error. UTC rollover stops old
+retrieval work until a new lease is acquired. The shared account's other usage
+is not measured by this runner, and a single query may overshoot; these are
+planning caps, not guarantees of account-wide free capacity. Exhausted balance
+returns `PAUSED_RETRIEVAL_DAILY_BUDGET`, not a claim that Cloudflare's quota is
+necessarily exhausted. Independent publication does not require a retrieval lease.
 
 The production job has a 15-minute hard timeout and a 600-second cooperative
 work budget, including a 65-second reserve before starting another remote call.

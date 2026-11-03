@@ -276,19 +276,78 @@ class RetrievalRecoveryTest(unittest.TestCase):
         env={key:'test' for key in r.REQUIRED};env['ENABLE_PRODUCTION']='true'
         change=patch.dict(os.environ,env);change.start();self.addCleanup(change.stop)
 
-    def test_slots_survive_restart_and_crash_without_refund(self):
-        self.assertTrue(r.reserve_retrieval(self.store,self.now))
-        restarted=r.Store(self.path);self.addCleanup(restarted.db.close)
-        self.assertTrue(r.reserve_retrieval(restarted,self.now))
-        self.assertTrue(r.reserve_retrieval(restarted,self.now))
-        self.assertFalse(r.reserve_retrieval(self.store,self.now))
+    def fresh_store(self):
+        store=r.Store(self.path);self.addCleanup(store.db.close)
+        return store
+
+    def test_abandoned_leases_survive_restart_and_remain_charged(self):
+        for _ in range(4): self.assertTrue(r.reserve_retrieval(self.fresh_store(),self.now))
+        self.assertFalse(r.reserve_retrieval(self.fresh_store(),self.now))
 
     def test_utc_reset_and_environment_cannot_raise_budgets(self):
         self.store.row_read_budget=9999999;self.store.row_write_budget=9999999
-        for _ in range(3): self.assertTrue(r.reserve_retrieval(self.store,self.now))
-        self.assertEqual((self.store.row_read_budget,self.store.row_write_budget),(250000,10000))
-        self.assertFalse(r.reserve_retrieval(self.store,self.now))
-        self.assertTrue(r.reserve_retrieval(self.store,self.now+dt.timedelta(minutes=1)))
+        self.assertTrue(r.reserve_retrieval(self.store,self.now))
+        self.assertEqual((self.store.row_read_budget,self.store.row_write_budget),(249900,9900))
+        self.assertEqual(self.store.accounting_limits,(250000,10000))
+        for _ in range(3): self.assertTrue(r.reserve_retrieval(self.fresh_store(),self.now))
+        self.assertFalse(r.reserve_retrieval(self.fresh_store(),self.now))
+        self.assertTrue(r.reserve_retrieval(self.fresh_store(),self.now+dt.timedelta(minutes=1)))
+
+    def test_more_than_three_cheap_attempts_charge_measured_usage(self):
+        for _ in range(8):
+            store=self.fresh_store()
+            self.assertTrue(r.reserve_retrieval(store,self.now))
+            store.rows_read=100;store.rows_written=50
+            r.settle_retrieval(store)
+            r.settle_retrieval(store)  # identical finalization cannot double charge
+        rows=self.store.sql("SELECT payload FROM wl_checkpoints WHERE run_key=?",('system:retrieval-budget:2026-11-02',))
+        self.assertEqual(sum(json.loads(row['payload'])['charged_writes'] for row in rows),480)
+        self.assertTrue(all(json.loads(row['payload'])['state']=='SETTLED' for row in rows))
+
+    def test_old_slots_are_conservatively_counted_not_deleted_or_reset(self):
+        key='system:retrieval-budget:2026-11-02'
+        for i in range(3):
+            self.store.sql('INSERT INTO wl_checkpoints VALUES(?,?,?)',(key,'slot:'+str(i),json.dumps({
+                'read_budget':250000,'write_budget':10000,'write_headroom':5000})))
+        self.assertTrue(r.reserve_retrieval(self.fresh_store(),self.now))
+        self.assertFalse(r.reserve_retrieval(self.fresh_store(),self.now))
+        self.assertEqual(self.store.sql("SELECT count(*) AS n FROM wl_checkpoints WHERE run_key=? AND unit LIKE 'slot:%'",(key,))[0]['n'],3)
+
+    def test_settlement_has_reserved_room_after_work_pause_but_not_full_exhaustion(self):
+        store=self.fresh_store();r.reserve_retrieval(store,self.now)
+        store.rows_written=9950
+        r.settle_retrieval(store)
+        payload=json.loads(store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=?',('system:retrieval-budget:2026-11-02',))[0]['payload'])
+        self.assertEqual(payload['charged_writes'],9960)
+        store=self.fresh_store();r.reserve_retrieval(store,self.now)
+        store.rows_written=10001
+        with patch.object(store,'sql',wraps=store.sql) as sql: r.settle_retrieval(store)
+        sql.assert_not_called()
+
+    def test_quota_exhaustion_never_attempts_settlement(self):
+        store=self.fresh_store();r.reserve_retrieval(store,self.now);store.quota_exhausted=True
+        with patch.object(store,'sql') as sql: r.settle_retrieval(store)
+        sql.assert_not_called()
+
+    def test_missing_usage_metadata_never_refunds_reservation(self):
+        store=self.fresh_store();r.reserve_retrieval(store,self.now);store.usage_complete=False
+        with patch.object(store,'sql') as sql: r.settle_retrieval(store)
+        sql.assert_not_called()
+
+    def test_failed_settlement_leaves_reservation_fully_charged(self):
+        store=self.fresh_store();r.reserve_retrieval(store,self.now)
+        with patch.object(store,'sql',side_effect=TimeoutError()):
+            with self.assertRaises(TimeoutError): r.settle_retrieval(store)
+        payload=json.loads(self.store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=?',('system:retrieval-budget:2026-11-02',))[0]['payload'])
+        self.assertEqual(payload['state'],'RESERVED');self.assertEqual(payload['charged_writes'],15000)
+
+    def test_remaining_balance_can_grant_smaller_allowance(self):
+        key='system:retrieval-budget:2026-11-02'
+        self.store.sql('INSERT INTO wl_checkpoints VALUES(?,?,?)',(key,'usage:prior',json.dumps({
+            'state':'SETTLED','charged_reads':0,'charged_writes':57000})))
+        store=self.fresh_store();self.assertTrue(r.reserve_retrieval(store,self.now))
+        self.assertEqual(store.row_write_budget,1900)
+        self.assertFalse(r.reserve_retrieval(self.fresh_store(),self.now))
 
     def count_slots(self):
         return self.store.sql("SELECT count(*) AS n FROM wl_checkpoints WHERE run_key LIKE 'system:retrieval-budget:%'")[0]['n']
@@ -305,7 +364,7 @@ class RetrievalRecoveryTest(unittest.TestCase):
 
     def test_daily_exhaustion_prevents_retrieval(self):
         self.seed()
-        for _ in range(3): self.assertTrue(r.reserve_retrieval(self.store))
+        for _ in range(4): self.assertTrue(r.reserve_retrieval(self.fresh_store()))
         with patch('backfill.resume') as resume,patch.object(r,'run_etl') as etl:
             self.assertEqual(r.execute('recovery',self.store),'PAUSED_RETRIEVAL_DAILY_BUDGET')
         resume.assert_not_called();etl.assert_not_called()

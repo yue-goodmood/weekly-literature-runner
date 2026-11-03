@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import urllib.error
+import uuid
 from zoneinfo import ZoneInfo
 
 from pipeline import (ROOT, Store, PubMed, TRIAGE_POLICY, digest, request, run_etl,
@@ -83,30 +84,67 @@ def strict(audit):
 
 
 def reserve_retrieval(store, now=None):
-    """At most three retrieval attempts per UTC day, including manual/push runs.
+    """Atomically reserve capacity, then settle measured usage, not run count.
 
-    Charge a full slot before work, even on crash. Indexed D1 receipts survive
-    runners; no self-dispatch, refunded slots, or account-quota assumptions.
-    Each slot keeps the existing 10k-write/250k-read process guard; allow 5k
-    write headroom per slot because one remote batch may cross that guard.
-    Publication and assistant analysis remain independent of these slots.
+    Retrieval owns at most 3M reads/60k writes per UTC day, leaving headroom
+    against the shared Free allowance for analysis/delivery/other services.
+    Abandoned leases and old three-slot receipts are charged conservatively.
+    This is not an account-wide meter; single queries can still overshoot.
     """
+    if getattr(store,'retrieval_lease',None): raise ConfigurationError()
     day=(now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc).date()
     key='system:retrieval-budget:'+day.isoformat()
-    for slot in range(3):
-        unit='slot:'+str(slot)
-        rows=store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?) RETURNING unit',
-                       (key,unit,json.dumps({'read_budget':250000,'write_budget':10000,
-                                           'write_headroom':5000})))
-        if rows:
-            # Never let a workflow environment override increase these limits.
-            store.row_read_budget=min(store.row_read_budget,250000)
-            store.row_write_budget=min(store.row_write_budget,10000)
-            return True
-    return False
+    unit='usage:'+uuid.uuid4().hex
+    # One statement provides cross-run atomic admission, not a read-then-write
+    # race. Retain old slot receipts; unknown historical usage is never erased.
+    rows=store.sql("""WITH used AS (
+      SELECT coalesce(sum(CASE WHEN unit>='slot:' AND unit<'slot;' THEN
+        coalesce(json_extract(payload,'$.read_budget'),250000)+100000
+        ELSE json_extract(payload,'$.charged_reads') END),0) AS reads,
+        coalesce(sum(CASE WHEN unit>='slot:' AND unit<'slot;' THEN
+        coalesce(json_extract(payload,'$.write_budget'),10000)+
+        coalesce(json_extract(payload,'$.write_headroom'),5000)
+        ELSE json_extract(payload,'$.charged_writes') END),0) AS writes
+      FROM wl_checkpoints WHERE run_key=? AND
+        ((unit>='slot:' AND unit<'slot;') OR (unit>='usage:' AND unit<'usage;')))
+      INSERT INTO wl_checkpoints SELECT ?,?,json_object('state','RESERVED',
+        'charged_reads',min(350000,3000000-reads),
+        'charged_writes',min(15000,60000-writes)) FROM used
+      WHERE reads<=2995000 AND writes<=58000 RETURNING payload""",(key,key,unit))
+    if not rows: return False
+    receipt=json.loads(rows[0]['payload'])
+    # Work stops BEFORE the full process allowance, reserving 100 rows for a
+    # single bounded usage settlement. Never reset resource counters or widen
+    # the original per-process ceiling to perform bookkeeping.
+    limits=(min(store.row_read_budget,250000,receipt['charged_reads']-1000),
+            min(store.row_write_budget,10000,receipt['charged_writes']-1000))
+    store.accounting_limits=limits
+    store.row_read_budget,store.row_write_budget=(max(1,n-100) for n in limits)
+    store.retrieval_lease=(key,unit)
+    store.retrieval_day=day.isoformat()
+    return True
 
 
-def execute(mode, store=None, today=None, _reserved=False):
+def settle_retrieval(store):
+    lease=getattr(store,'retrieval_lease',None)
+    if not lease or store.quota_exhausted or not store.usage_complete: return
+    limits=store.accounting_limits
+    if store.rows_read>=limits[0]-10 or store.rows_written>=limits[1]-10:
+        return  # A large last query used the reserve; retain the full lease.
+    check_budget()
+    payload={'state':'SETTLED','measured_reads':store.rows_read,'measured_writes':store.rows_written,
+             'charged_reads':store.rows_read+10,'charged_writes':store.rows_written+10,
+             'accounting_headroom':10}
+    store.settling_budget=True
+    try:
+        store.sql('UPDATE wl_checkpoints SET payload=? WHERE run_key=? AND unit=?',
+                   (json.dumps(payload),*lease))
+        store.retrieval_lease=None
+    finally:
+        store.settling_budget=False
+
+
+def _execute(mode, store=None, today=None, _reserved=False):
     if os.environ.get('ENABLE_PRODUCTION') != 'true':
         return 'DISABLED'
     needed = REQUIRED if mode in ('readiness', 'publish', 'scheduled', 'recovery') else REQUIRED[:3]
@@ -239,6 +277,31 @@ def execute(mode, store=None, today=None, _reserved=False):
                 return 'PARTIAL_SYNC_VERIFIED' if changed else 'AWAITING_REVIEW'
         return 'AWAITING_REVIEW' if rows else 'NO_PENDING_PUBLICATION'
     return 'ETL_CHECKPOINTED'
+
+
+def execute(mode, store=None, today=None, _reserved=False):
+    if os.environ.get('ENABLE_PRODUCTION')!='true': return 'DISABLED'
+    needed=REQUIRED if mode in ('readiness','publish','scheduled','recovery') else REQUIRED[:3]
+    if any(not os.environ.get(key,'').strip() for key in needed): raise ConfigurationError()
+    store=store if store is not None else Store()
+    owner=not _reserved and not getattr(store,'retrieval_lease',None)
+    quota=False
+    try:
+        return _execute(mode,store,today,_reserved)
+    except BaseException as exc:
+        cause=exc.cause if isinstance(exc,PhaseError) else exc
+        quota=isinstance(cause,RuntimeError) and cause.args==('D1_DAILY_QUOTA_EXCEEDED',)
+        if quota: store.quota_exhausted=True
+        raise
+    finally:
+        if owner and not quota:
+            try:
+                settle_retrieval(store)
+            except Exception:
+                # Unknown/crashed accounting retains the original conservative
+                # reservation. Never retry bookkeeping or mask quota exhaustion.
+                if getattr(store,'quota_exhausted',False):
+                    raise RuntimeError('D1_DAILY_QUOTA_EXCEEDED') from None
 
 
 def safe_main(mode, worker=execute):
