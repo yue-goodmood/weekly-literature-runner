@@ -82,6 +82,31 @@ class Arxiv:
         return {'records': records, 'total': int(total), 'next': str(following) if following < int(total) else None}
 
 
+def identity_ledger(store, run, scan_key):
+    """Exact identities in compact page receipts, not one indexed row per ID.
+
+    Load only IDs/cursors once per resumed query, never saved abstracts. Legacy
+    indexed rows migrate once in bounded chunks; originals are never deleted.
+    A ready marker is committed last, making partial migrations replay-safe.
+    """
+    prefix='harvest-identities-v2:'+scan_key+':'
+    ready=store.sql('SELECT 1 FROM wl_checkpoints WHERE run_key=? AND unit=?',(run,prefix+'ready'))
+    if not ready:
+        values=[row['value'] for row in store.sql(
+            'SELECT value FROM wl_harvest_seen WHERE run_key=? AND scan_key=? ORDER BY value',(run,scan_key))]
+        writes=[('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',
+                 (run,prefix+'values:legacy:'+str(offset),json.dumps(values[offset:offset+1000])))
+                for offset in range(0,len(values),1000)]
+        # Store.batch commits at most 50 statements at once. Keep the marker
+        # LAST, so a crash can never make a partial migration authoritative.
+        writes.append(('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',(run,prefix+'ready','true')))
+        store.batch(writes)
+        return prefix,set(values)
+    rows=store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit>=? AND unit<?',
+                   (run,prefix+'values:',prefix+'values;'))
+    return prefix,{value for row in rows for value in json.loads(row['payload'])}
+
+
 def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, ingest_many=None, namespace=''):
     """Freeze pages, verify unique source IDs/counts, never label capped queries complete."""
     counts = {}
@@ -110,6 +135,9 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
         seen_count = progress.get('seen_count',0)
         page_number = progress.get('page_number',0)
         scan_key = digest([completed_unit,generation])
+        identity_prefix,seen=identity_ledger(store,run,scan_key)
+        if sum(value.startswith('id:') for value in seen)!=seen_count:
+            raise ValueError('Incomplete or repeated source cursor')
         # Old frozen pages are migrated once, without re-ingestion. Thereafter
         # the pointer and indexed identity ledger resume directly at the next page.
         while True:
@@ -142,10 +170,8 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
                 raise ValueError('Incomplete or repeated source cursor')
             values = ['id:'+identifier for identifier in identifiers]
             probes = values+(['cursor:'+json.dumps(following)] if not done else [])
-            previous = store.sql('SELECT value FROM wl_harvest_seen '
-                'WHERE run_key=? AND scan_key=? AND value IN (SELECT value FROM json_each(?))',
-                (run,scan_key,json.dumps(probes))) if probes else []
-            if any(row['value'].startswith('id:') for row in previous):
+            previous = seen.intersection(probes)
+            if any(value.startswith('id:') for value in previous):
                 raise ValueError('Repeated source record during pagination')
             if previous:
                 raise ValueError('Incomplete or repeated source cursor')
@@ -162,8 +188,9 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
             progress = dict(cursor=following,expected=expected,seen_count=count,
                             page_number=page_number+1)
             commits = [
-                ('INSERT OR IGNORE INTO wl_harvest_seen SELECT ?,?,value FROM json_each(?)',
-                 (run,scan_key,json.dumps(values+['cursor:'+json.dumps(cursor)]))),
+                ('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
+                 (run,identity_prefix+'values:page:'+str(page_number),
+                  json.dumps(values+['cursor:'+json.dumps(cursor)]))),
                 ('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',(run,unit+':ingested','true')),
                 ('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',
                  (run,progress_unit,json.dumps(progress)))]
@@ -171,6 +198,7 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
                 commits.append(('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
                     (run,completed_unit,json.dumps({'count':expected,'generation':generation}))))
             store.batch(commits)
+            seen.update(values+['cursor:'+json.dumps(cursor)])
             if done:
                 counts[name] = expected
                 break

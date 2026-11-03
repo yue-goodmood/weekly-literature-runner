@@ -5,7 +5,7 @@ import unittest
 import urllib.parse
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'src'))
 from pipeline import Store, aliases, run_supplements
-from supplements import EuropePMC, Arxiv, harvest, harvest_windowed, SourceSnapshotChanged
+from supplements import EuropePMC, Arxiv, harvest, harvest_windowed, SourceSnapshotChanged, identity_ledger
 
 class SupplementTests(unittest.TestCase):
     def test_resume_after_39_pages_reads_only_next_page(self):
@@ -72,7 +72,10 @@ class SupplementTests(unittest.TestCase):
                 return {'records':[{'source_id':'a'}],'total':1,'next':None}
         adapter=Adapter(); real_batch=store.batch
         def broken(statements):
-            real_batch(statements[:1]+[('INVALID SQL',())]+statements[1:])
+            if any('values:page:' in str(params) for sql,params in statements):
+                real_batch(statements[:1]+[('INVALID SQL',())]+statements[1:])
+            else:
+                real_batch(statements)
         with patch.object(store,'batch',side_effect=broken):
             with self.assertRaises(Exception): harvest(store,'r',adapter,{'q':'x'},'a','b',lambda row:None)
         self.assertEqual(store.sql('SELECT * FROM wl_harvest_seen'),[])
@@ -97,7 +100,48 @@ class SupplementTests(unittest.TestCase):
         delivered=[]
         harvest_windowed(store,'r',Adapter(),{'q':'x'},'a','b',delivered.append)
         self.assertEqual(delivered,[{'source_id':'b'}])
-        self.assertEqual(len(store.sql("SELECT value FROM wl_harvest_seen WHERE value LIKE 'id:%'")),2)
+        rows=store.sql("SELECT payload FROM wl_checkpoints WHERE unit LIKE 'harvest-identities-v2:%:values:%'")
+        self.assertEqual({v for row in rows for v in json.loads(row['payload']) if v.startswith('id:')},{'id:a','id:b'})
+
+    def test_compact_identity_receipts_do_not_write_one_row_per_record(self):
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            def page(self,q,start,end,cursor):
+                offset=int(cursor or 0)
+                return {'records':[{'source_id':str(i)} for i in range(offset,offset+100)],
+                        'total':500,'next':str(offset+100) if offset<400 else None}
+        before=store.db.total_changes
+        self.assertEqual(harvest(store,'r',Adapter(),{'q':'x'},'a','b',lambda row:None)['counts'],{'q':500})
+        self.assertLessEqual(store.db.total_changes-before,30)
+        self.assertEqual(store.sql('SELECT count(*) AS n FROM wl_harvest_seen')[0]['n'],0)
+        receipts=store.sql("SELECT payload FROM wl_checkpoints WHERE unit LIKE 'harvest-identities-v2:%:values:%'")
+        self.assertEqual(len({v for row in receipts for v in json.loads(row['payload']) if v.startswith('id:')}),500)
+
+    def test_legacy_identity_migration_crash_preserves_all_ids_and_old_rows(self):
+        from unittest.mock import patch
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        expected={'id:'+str(i) for i in range(1001)}|{'cursor:null'}
+        store.batch([('INSERT INTO wl_harvest_seen VALUES(?,?,?)',('r','scan',v)) for v in expected])
+        real_batch=store.batch
+        def interrupted(statements):
+            real_batch(statements[:1])
+            raise TimeoutError()
+        with patch.object(store,'batch',side_effect=interrupted):
+            with self.assertRaises(TimeoutError): identity_ledger(store,'r','scan')
+        self.assertEqual(store.sql("SELECT 1 FROM wl_checkpoints WHERE unit='harvest-identities-v2:scan:ready'"),[])
+        self.assertEqual(identity_ledger(store,'r','scan')[1],expected)
+        with patch.object(store,'sql',wraps=store.sql) as sql:
+            self.assertEqual(identity_ledger(store,'r','scan')[1],expected)
+            self.assertEqual(sql.call_count,2)
+            self.assertFalse(any('wl_harvest_seen' in call.args[0] for call in sql.call_args_list))
+        self.assertEqual(store.sql('SELECT count(*) AS n FROM wl_harvest_seen')[0]['n'],len(expected))
+
+    def test_compact_range_uses_index_not_table_scan(self):
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        plan=store.sql('EXPLAIN QUERY PLAN SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit>=? AND unit<?',('r','p:values:','p:values;'))
+        self.assertTrue(any('SEARCH' in row['detail'] for row in plan))
+        self.assertFalse(any('SCAN' in row['detail'] for row in plan))
 
     def test_fresh_window_plan_is_disjoint_complete_and_resumable(self):
         store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
