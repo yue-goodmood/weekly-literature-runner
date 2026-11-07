@@ -5,6 +5,7 @@ analyses or dates. READY candidates can be analysed while retrieval continues;
 final publication is blocked until the backfill has completed.
 """
 import json
+import datetime as dt
 from pipeline import (TRIAGE_POLICY, digest, search_split, ingest_articles,
                       select_candidates, score)
 from supplements import harvest_windowed, SourceSnapshotChanged
@@ -24,7 +25,8 @@ def save(store,run,unit,value):
 def source_progress(store,run,name,value):
     """Expose source receipts immediately, without rewriting original ETL audit."""
     store.sql("UPDATE wl_runs SET audit=json_set(audit, ?, json(?)) WHERE run_key=?",
-              ('$.scope.backfill.sources.'+json.dumps(name),json.dumps(value),run))
+              ('$.scope.backfill.sources.'+json.dumps(name),json.dumps({**value,
+               'last_attempt_at':dt.datetime.now(dt.timezone.utc).isoformat()}),run))
 
 
 def needed(state):
@@ -112,9 +114,13 @@ def resume(store,run,config,pubmed,adapters):
                 complete=harvest_windowed(store,run,adapters[name],settings['queries'],start,end,
                     lambda article:ingest_articles(store,run,[article]),
                     ingest_many=lambda records:ingest_articles(store,run,records),namespace=PREFIX)
-            except SourceSnapshotChanged:
+            except SourceSnapshotChanged as exc:
                 source_progress(store,run,name,{'status':'PARTIAL',
-                    'reason':'SNAPSHOT_RESTART_PENDING','window_start':start,'window_end':end})
+                    'reason':'SNAPSHOT_RESTART_PENDING','window_start':start,'window_end':end,
+                    'snapshot_reason':getattr(exc,'reason','UNKNOWN'),
+                    'partition_window':getattr(exc,'partition_window',None),
+                    'previous_total':getattr(exc,'previous_total',None),
+                    'observed_total':getattr(exc,'observed_total',None)})
                 raise
         save(store,run,'source:'+name,complete)
         source_progress(store,run,name,complete)

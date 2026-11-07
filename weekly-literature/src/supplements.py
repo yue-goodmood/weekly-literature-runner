@@ -146,7 +146,12 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
                        'previous_total':expected, 'observed_total':observed}
             store.sql('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',
                       (run,snapshot_unit,json.dumps(receipt)))
-            raise SourceSnapshotChanged()
+            failure=SourceSnapshotChanged()
+            failure.reason=reason
+            failure.partition_window=[start,end]
+            failure.previous_total=expected
+            failure.observed_total=observed
+            raise failure
         # Old frozen pages are migrated once, without re-ingestion. Thereafter
         # the pointer and indexed identity ledger resume directly at the next page.
         while True:

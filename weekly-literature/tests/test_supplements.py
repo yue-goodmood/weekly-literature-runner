@@ -49,8 +49,10 @@ class SupplementTests(unittest.TestCase):
                     return {'records':[{'source_id':'a'},{'source_id':'a'}],'total':2,'next':None}
                 return {'records':[{'source_id':'a'},{'source_id':'b'}],'total':2,'next':None}
         adapter=Adapter();delivered=[]
-        with self.assertRaises(SourceSnapshotChanged):
+        with self.assertRaises(SourceSnapshotChanged) as failure:
             harvest_windowed(store,'r',adapter,{'q':'x'},'2026-01-01','2026-01-01',delivered.append)
+        self.assertEqual(failure.exception.reason,'SOURCE_RECORD_REPEATED_WITHIN_PAGE')
+        self.assertEqual(failure.exception.partition_window,['2026-01-01','2026-01-01'])
         self.assertEqual(delivered,[])
         from pipeline import digest
         complete='supplement-complete:test:'+digest(['q','x','2026-01-01','2026-01-01',None])
