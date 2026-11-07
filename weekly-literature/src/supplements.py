@@ -19,7 +19,8 @@ def plain(value):
 
 class EuropePMC:
     name = 'Europe PMC'
-    checkpoint_namespace = 'epmc-date-v2:'
+    # A different page size must not reuse old cursor/page checkpoints.
+    checkpoint_namespace = 'epmc-date-v3-1000:'
     supports_date_slicing = True
 
     def __init__(self, transport):
@@ -27,7 +28,7 @@ class EuropePMC:
 
     def page(self, query, start, end, cursor):
         params = {'query': f'({query}) AND FIRST_IDATE:[{start} TO {end}]',
-                  'format': 'json', 'resultType': 'core', 'pageSize': 100,
+                  'format': 'json', 'resultType': 'core', 'pageSize': 1000,
                   'sort': 'P_PDATE_D asc',
                   'cursorMark': cursor or '*'}
         value = json.loads(self.transport('https://www.ebi.ac.uk/europepmc/webservices/rest/search?' + urllib.parse.urlencode(params)))
@@ -138,6 +139,14 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
         identity_prefix,seen=identity_ledger(store,run,scan_key)
         if sum(value.startswith('id:') for value in seen)!=seen_count:
             raise ValueError('Incomplete or repeated source cursor')
+        def retire(reason, observed=None):
+            # Preserve the bad page and ledger for diagnosis, but never replay
+            # that same poisoned cache on every future scheduled invocation.
+            receipt = {'generation':generation+1, 'reason':reason,
+                       'previous_total':expected, 'observed_total':observed}
+            store.sql('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',
+                      (run,snapshot_unit,json.dumps(receipt)))
+            raise SourceSnapshotChanged()
         # Old frozen pages are migrated once, without re-ingestion. Thereafter
         # the pointer and indexed identity ledger resume directly at the next page.
         while True:
@@ -153,27 +162,33 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
                 # cached old pages with new pages can never establish coverage.
                 # Retire only this query's snapshot and pause, without claiming
                 # completion or repeatedly fetching within the same process.
-                receipt = {'generation':generation+1, 'reason':'SOURCE_COUNT_CHANGED',
-                           'previous_total':expected, 'observed_total':page['total']}
-                store.sql('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',
-                          (run,snapshot_unit,json.dumps(receipt)))
-                raise SourceSnapshotChanged()
+                retire('SOURCE_COUNT_CHANGED',page['total'])
             identifiers = [article['source_id'] for article in page['records']]
             if len(identifiers) != len(set(identifiers)):
+                if getattr(adapter,'supports_date_slicing',False):
+                    retire('SOURCE_RECORD_REPEATED_WITHIN_PAGE',page['total'])
                 raise ValueError('Repeated source record within page')
             following = page['next']
             count = seen_count+len(identifiers)
             if count > expected:
+                if getattr(adapter,'supports_date_slicing',False):
+                    retire('SOURCE_COUNT_OVERFLOW',page['total'])
                 raise ValueError('Incomplete or repeated source cursor')
             done = count == expected
             if not done and (not identifiers or following is None or following == cursor):
+                if getattr(adapter,'supports_date_slicing',False):
+                    retire('SOURCE_CURSOR_INVALID',page['total'])
                 raise ValueError('Incomplete or repeated source cursor')
             values = ['id:'+identifier for identifier in identifiers]
             probes = values+(['cursor:'+json.dumps(following)] if not done else [])
             previous = seen.intersection(probes)
             if any(value.startswith('id:') for value in previous):
+                if getattr(adapter,'supports_date_slicing',False):
+                    retire('SOURCE_RECORD_REPEATED',page['total'])
                 raise ValueError('Repeated source record during pagination')
             if previous:
+                if getattr(adapter,'supports_date_slicing',False):
+                    retire('SOURCE_CURSOR_REPEATED',page['total'])
                 raise ValueError('Incomplete or repeated source cursor')
             ingested = store.sql('SELECT 1 FROM wl_checkpoints WHERE run_key=? AND unit=?',(run,unit+':ingested'))
             if not ingested:
@@ -207,6 +222,40 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
             cursor = following
     return {'status': 'COMPLETE_FOR_QUERY', 'counts': counts, 'window_start': start, 'window_end': end,
             'checkpoint_namespace':namespace+getattr(adapter, 'checkpoint_namespace', '')}
+
+
+def harvest_partition(store, run, adapter, name, query, start, end, ingest,
+                      ingest_many, namespace):
+    """Replace only invalid spans with durable, disjoint smaller date spans.
+
+    A split is committed before child work. On resume a poisoned parent is
+    bypassed; completed siblings remain cached. A one-day anomaly pauses after
+    retiring its generation, and can never be labelled complete by dedup alone.
+    """
+    from pipeline import digest
+    unit=namespace+getattr(adapter,'checkpoint_namespace','')+'partition-split:v1:'+digest([name,query,start,end])
+    rows=store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit=?',(run,unit))
+    split=json.loads(rows[0]['payload']) if rows else None
+    if not split:
+        try:
+            result=harvest(store,run,adapter,{name:query},start,end,ingest,
+                           ingest_many=ingest_many,namespace=namespace)
+            return [{'window_start':start,'window_end':end,
+                     'status':result['status'],'count':result['counts'][name]}]
+        except SourceSnapshotChanged:
+            left,right=dt.date.fromisoformat(start),dt.date.fromisoformat(end)
+            if left==right:
+                raise
+            middle=left+(right-left)//2
+            split={'windows':[[start,middle.isoformat()],
+                              [(middle+dt.timedelta(days=1)).isoformat(),end]]}
+            store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
+                      (run,unit,json.dumps(split)))
+    parts=[]
+    for left,right in split['windows']:
+        parts.extend(harvest_partition(store,run,adapter,name,query,left,right,
+                                      ingest,ingest_many,namespace))
+    return parts
 
 
 def harvest_windowed(store, run, adapter, queries, start, end, ingest,
@@ -247,18 +296,17 @@ def harvest_windowed(store, run, adapter, queries, start, end, ingest,
             return {'legacy':False,'windows':windows}
         frozen=store.checkpoint(run,complete_unit+':window-plan:v1',plan)
         if frozen['legacy']:
-            value=harvest(store,run,adapter,{name:query},start,end,ingest,
-                ingest_many=ingest_many,namespace=namespace)
-            counts[name]=value['counts'][name]
-            partitions[name]=[{'window_start':start,'window_end':end}]
-            continue
+            windows=[[start,end]]
+            child_namespace=namespace
+        else:
+            windows=frozen['windows']
+            child_namespace=namespace+'window-v1:'+identity+':'
         total, parts=0,[]
-        for left,right in frozen['windows']:
-            child=harvest(store,run,adapter,{name:query},left,right,ingest,
-                ingest_many=ingest_many,namespace=namespace+'window-v1:'+identity+':')
-            total+=child['counts'][name]
-            parts.append({'window_start':left,'window_end':right,
-                          'status':child['status'],'count':child['counts'][name]})
+        for left,right in windows:
+            children=harvest_partition(store,run,adapter,name,query,left,right,
+                                      ingest,ingest_many,child_namespace)
+            total+=sum(child['count'] for child in children)
+            parts.extend(children)
         # These are summed source hits, not an assertion of unique articles across
         # live index snapshots. Canonical ingestion independently deduplicates IDs.
         store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
@@ -268,6 +316,7 @@ def harvest_windowed(store, run, adapter, queries, start, end, ingest,
     return {'status':'COMPLETE_FOR_QUERY','counts':counts,'window_start':start,
         'window_end':end,'checkpoint_namespace':namespace+getattr(adapter,'checkpoint_namespace',''),
         'partitions':partitions,'count_semantics':'source_hits_canonical_articles_deduplicated_separately'}
+
 
 
 

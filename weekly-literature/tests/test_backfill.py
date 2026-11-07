@@ -91,6 +91,12 @@ class BackfillTest(unittest.TestCase):
         self.assertEqual(progress['sources']['PubMed']['status'],'COMPLETE_FOR_QUERY')
         self.assertEqual(progress['sources']['Europe PMC']['status'],'RUNNING')
         self.assertEqual(audit['supplementary_sources'],self.audit['supplementary_sources'])
+        # PubMed's new candidate must be available for medical review even
+        # though a later source failed and final coverage remains incomplete.
+        self.assertEqual(self.store.sql('SELECT selected FROM wl_candidates WHERE run_key=? AND evidence_key=?',
+                                       (self.run,'PMID:2'))[0]['selected'],1)
+        self.assertIsNone(backfill.cached(self.store,self.run,'complete'))
 
 
 if __name__=='__main__': unittest.main()
+

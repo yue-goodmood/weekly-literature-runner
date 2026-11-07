@@ -143,6 +143,16 @@ checks replace the original guarantees. A 500-record pagination regression test
 requires at most 30 SQLite row changes for retrieval bookkeeping, excluding
 actual article ingestion, rather than at least 500 per-ID inserts.
 
+Europe PMC pagination uses a separate 1,000-record-page namespace, preserving
+old 100-record snapshots rather than mixing cursors. Invalid counts, repeated
+records and cursor cycles retire only the affected snapshot. Date partitions
+that fail validation split into durable disjoint child windows, down to one
+day, and resume completed siblings without replay. A one-day anomaly still
+pauses without a completion receipt; duplicate removal alone never proves
+coverage. Backfill exposes already ingested candidates to medical review at
+the next invocation and after each completed source, independently of later
+source failures. Process and daily resource limits remain unchanged.
+
 Fresh historical supplementary queries freeze disjoint date partitions of at
 most seven days, covering the original window without gaps or a result cap.
 Already-started snapshots retain their exact query/window/cursor instead of
@@ -270,5 +280,6 @@ GitHub policies and platform limits. This does not remove Cloudflare D1 daily
 quotas or upstream API limits. On D1 quota exhaustion stop without repeated
 saves and continue from checkpoints after reset. No Queues, Workflows, R2,
 paid model inference, billing changes, or automatically created cloud accounts.
+
 
 

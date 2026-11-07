@@ -8,6 +8,58 @@ from pipeline import Store, aliases, run_supplements
 from supplements import EuropePMC, Arxiv, harvest, harvest_windowed, SourceSnapshotChanged, identity_ledger
 
 class SupplementTests(unittest.TestCase):
+    def test_poisoned_page_splits_and_resumes_without_replaying_parent(self):
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            supports_date_slicing=True
+            fail=True
+            calls=[]
+            def page(self,q,start,end,cursor):
+                self.calls.append((start,end,cursor))
+                if start=='2026-01-01' and end=='2026-01-04':
+                    return {'records':[{'source_id':'bad'}],'total':3,'next':'next' if cursor is None else 'last'}
+                if start=='2026-01-03' and self.fail: raise TimeoutError()
+                return {'records':[{'source_id':start}],'total':1,'next':None}
+        adapter=Adapter();delivered=[]
+        with self.assertRaises(TimeoutError):
+            harvest_windowed(store,'r',adapter,{'q':'x'},'2026-01-01','2026-01-04',delivered.append)
+        old=store.sql("SELECT unit,payload FROM wl_checkpoints WHERE unit LIKE '%supplement:test:%' ORDER BY unit")
+        self.assertEqual(len([x for x in adapter.calls if x[:2]==('2026-01-01','2026-01-04')]),2)
+        adapter.fail=False
+        result=harvest_windowed(store,'r',adapter,{'q':'x'},'2026-01-01','2026-01-04',delivered.append)
+        self.assertEqual(result['counts'],{'q':2})
+        self.assertEqual([(p['window_start'],p['window_end']) for p in result['partitions']['q']],
+                         [('2026-01-01','2026-01-02'),('2026-01-03','2026-01-04')])
+        self.assertEqual(len([x for x in adapter.calls if x[:2]==('2026-01-01','2026-01-04')]),2)
+        self.assertEqual(adapter.calls.count(('2026-01-01','2026-01-02',None)),1)
+        saved={x['unit']:x['payload'] for x in store.sql('SELECT unit,payload FROM wl_checkpoints')}
+        self.assertTrue(all(saved[x['unit']]==x['payload'] for x in old))
+
+    def test_single_day_duplicate_retires_cache_without_false_completion(self):
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            supports_date_slicing=True
+            repaired=False
+            calls=0
+            def page(self,*args):
+                self.calls+=1
+                if not self.repaired:
+                    return {'records':[{'source_id':'a'},{'source_id':'a'}],'total':2,'next':None}
+                return {'records':[{'source_id':'a'},{'source_id':'b'}],'total':2,'next':None}
+        adapter=Adapter();delivered=[]
+        with self.assertRaises(SourceSnapshotChanged):
+            harvest_windowed(store,'r',adapter,{'q':'x'},'2026-01-01','2026-01-01',delivered.append)
+        self.assertEqual(delivered,[])
+        from pipeline import digest
+        complete='supplement-complete:test:'+digest(['q','x','2026-01-01','2026-01-01',None])
+        self.assertEqual(store.sql('SELECT 1 FROM wl_checkpoints WHERE run_key=? AND unit=?',('r',complete)),[])
+        adapter.repaired=True
+        result=harvest_windowed(store,'r',adapter,{'q':'x'},'2026-01-01','2026-01-01',delivered.append)
+        self.assertEqual(result['counts'],{'q':2})
+        self.assertEqual(adapter.calls,2)
+
     def test_resume_after_39_pages_reads_only_next_page(self):
         from unittest.mock import patch
         store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
@@ -241,7 +293,8 @@ class SupplementTests(unittest.TestCase):
         store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
         result=harvest(store,'r',adapter,{'q':'clinical'},'2026-09-01','2026-09-02',lambda row:None)
         self.assertEqual(urllib.parse.parse_qs(urllib.parse.urlsplit(urls[0]).query)['sort'],['P_PDATE_D asc'])
-        self.assertEqual(result['checkpoint_namespace'],'epmc-date-v2:')
+        self.assertEqual(result['checkpoint_namespace'],'epmc-date-v3-1000:')
+        self.assertEqual(urllib.parse.parse_qs(urllib.parse.urlsplit(urls[0]).query)['pageSize'],['1000'])
     def test_unlimited_harvest_continues_after_thirtieth_page(self):
         store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
         class Adapter:
@@ -302,6 +355,7 @@ class SupplementTests(unittest.TestCase):
         self.assertEqual(audit['test']['status'],'PARTIAL')
         audit=run_supplements(store,'run2',config,{'window_start':'2026-09-01','window_end':'2026-09-21'},{'test':Adapter()})
         self.assertEqual(audit['test']['window_start'],'2026-08-01')
+
 
 
 
