@@ -540,11 +540,20 @@ def select_candidates(store, key, cap):
     if cap is None:
         # Unlimited review still uses ten-item MCP pages and durable decisions.
         # Preserve existing selections, including previously excluded papers.
-        store.sql('UPDATE wl_candidates AS c SET selected=1 WHERE run_key=? AND selected=0 '
-                  'AND NOT EXISTS (SELECT 1 FROM wl_checkpoints p WHERE p.run_key=c.run_key AND p.unit=?||c.evidence_key) '
-                  'AND NOT EXISTS (SELECT 1 FROM wl_candidates old WHERE old.evidence_key=c.evidence_key '
-                  'AND old.run_key<c.run_key AND old.selected=1) '
-                  'AND NOT EXISTS (SELECT 1 FROM wl_history h WHERE h.evidence_key=c.evidence_key)', (key,'scope:'+TRIAGE_POLICY+':excluded:'))
+        while True:
+            # Each selected change also updates indexes. Bound the statement,
+            # rather than letting one UPDATE overshoot a whole process lease.
+            # Store.remote checks measured usage before the next small batch.
+            changed=store.sql('UPDATE wl_candidates SET selected=1 WHERE run_key=? AND evidence_key IN ('
+                'SELECT c.evidence_key FROM wl_candidates c WHERE c.run_key=? AND c.selected=0 '
+                'AND NOT EXISTS (SELECT 1 FROM wl_checkpoints p WHERE p.run_key=c.run_key AND p.unit=?||c.evidence_key) '
+                'AND NOT EXISTS (SELECT 1 FROM wl_candidates old WHERE old.evidence_key=c.evidence_key '
+                'AND old.run_key<c.run_key AND old.selected=1) '
+                'AND NOT EXISTS (SELECT 1 FROM wl_history h WHERE h.evidence_key=c.evidence_key) '
+                'ORDER BY c.evidence_key LIMIT 100) RETURNING evidence_key',
+                (key,key,'scope:'+TRIAGE_POLICY+':excluded:'))
+            if not changed:
+                break
         return store.sql('SELECT count(*) AS eligible,coalesce(sum(selected),0) AS selected FROM wl_candidates WHERE run_key=?', (key,))[0]
     # Colorectal starts at 50 and clinically evaluated medical-AI below 50.
     ai_cap = int(cap * .4)
@@ -609,6 +618,7 @@ def main():
 
 if __name__ == '__main__':
     main()
+
 
 
 

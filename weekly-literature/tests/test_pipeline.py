@@ -268,6 +268,25 @@ class PipelineTest(unittest.TestCase):
         self.assertEqual(p.select_candidates(self.store,run,None)['selected'],157)
         self.assertEqual(p.select_candidates(self.store,run,None)['selected'],157)
         self.assertEqual(self.store.sql('SELECT payload FROM wl_analysis')[0]['payload'],'{"decision":"exclude"}')
+
+    def test_selection_budget_pause_commits_only_small_batches_and_resumes(self):
+        run='bounded-selection'
+        self.store.batch([('INSERT INTO wl_candidates VALUES(?,?,?,0)',(run,str(i),50)) for i in range(251)])
+        real_sql=self.store.sql
+        sizes=[]
+        def limited(sql,params=()):
+            if sql.startswith('UPDATE wl_candidates SET selected=1') and sizes:
+                raise p.DatabaseBudgetReached()
+            rows=real_sql(sql,params)
+            if sql.startswith('UPDATE wl_candidates SET selected=1'):
+                sizes.append(len(rows))
+            return rows
+        with patch.object(self.store,'sql',side_effect=limited):
+            with self.assertRaises(p.DatabaseBudgetReached):
+                p.select_candidates(self.store,run,None)
+        self.assertEqual(sizes,[100])
+        self.assertEqual(real_sql('SELECT count(*) AS n FROM wl_candidates WHERE selected=1')[0]['n'],100)
+        self.assertEqual(p.select_candidates(self.store,run,None)['selected'],251)
     def test_historical_alias(self):
         self.store.sql('INSERT INTO wl_history VALUES(?,?)',('PMID:1','old'))
         p.run_etl(self.store,self.source,self.config,'2026-09-22')
@@ -347,6 +366,7 @@ class PipelineTest(unittest.TestCase):
             p.ingest_articles(self.store,'run',[dict(pmid='2',doi='10.1/first',title='Rectal cancer study two')])
 
 if __name__=='__main__': unittest.main()
+
 
 
 
