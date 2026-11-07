@@ -87,8 +87,7 @@ retains its independent verification, and the processing index receives a link
 to that verified final report. Finalization waits for all batches and links them
 instead of rewriting thousands of summaries in one giant page. Existing archived
 content is preserved. Main-branch deployment pushes check publication
-only, avoiding retrieval work on a publishing-code deployment. Existing weekday
-publication checks continue batching; no new high-frequency schedule is added.
+only, avoiding retrieval work on a publishing-code deployment. Hourly recovery and the existing weekday publication checks continue batching.
 
 ### Historical weekly layout
 
@@ -220,8 +219,7 @@ inference is executed in these workflows; the medical analysis backlog remains
 work for the connected assistant, not something a green ETL job clears.
 
 Merging runtime/config/schema changes into main triggers one serialized recovery
-check (production must still be enabled). Extra checks at 12:15, 18:15 and 22:15
-Shanghai every day, including weekends, resume existing ETL/backfill only; they
+check (production must still be enabled). Hourly checks at minute 15, including weekends, resume existing ETL/backfill only; they
 never create a new weekly batch. The original weekday 08:15 ETL and 13:15
 independent publication triggers remain. Completed backfill checks publication
 with the SAME process budget and all coverage/review/readback gates intact.

@@ -397,9 +397,10 @@ class RetrievalRecoveryTest(unittest.TestCase):
 
     def test_workflow_routes_and_serialization(self):
         workflow=(r.ROOT.parent/'.github/workflows/literature.yml').read_text()
-        self.assertIn("cron: '15 4,10,14 * * *'",workflow)
+        self.assertIn("cron: '15 * * * *'",workflow)
         self.assertIn("github.event_name == 'push' && 'recovery'",workflow)
         self.assertIn('cancel-in-progress: false',workflow)
         self.assertNotIn('actions: write',workflow)
+
 
 
