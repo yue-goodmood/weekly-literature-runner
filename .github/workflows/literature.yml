@@ -9,7 +9,7 @@ on:
       - '.github/workflows/literature.yml'
   schedule:
     - cron: '15 0 * * 1-5' # 08:15 Shanghai: resume interrupted retrieval
-    - cron: '15 5 * * 1-5' # 13:15 Shanghai: independent publication check
+    - cron: '45 * * * *' # Independent hourly publication; source pauses cannot block saved reviews
     - cron: '15 * * * *' # Hourly bounded recovery; measured daily lease stops exhausted work
   workflow_dispatch:
     inputs:
@@ -46,7 +46,7 @@ jobs:
           NOTION_DATA_SOURCE_ID: ${{ secrets.NOTION_DATA_SOURCE_ID }}
           NOTION_ARTICLE_DATA_SOURCE_ID: ${{ secrets.NOTION_ARTICLE_DATA_SOURCE_ID }}
           NCBI_EMAIL: ${{ secrets.NCBI_EMAIL }}
-          MODE: ${{ inputs.mode || (github.event_name == 'push' && 'recovery') || (github.event.schedule == '15 5 * * 1-5' && 'publish') || (github.event.schedule == '15 * * * *' && 'recovery') || 'etl' }}
+          MODE: ${{ inputs.mode || (github.event_name == 'push' && 'recovery') || (github.event.schedule == '45 * * * *' && 'publish') || (github.event.schedule == '15 * * * *' && 'recovery') || 'etl' }}
           WORK_BUDGET_SECONDS: '600'
           D1_RUN_READ_BUDGET: '250000'
           D1_RUN_WRITE_BUDGET: '10000'
