@@ -63,6 +63,10 @@ def resume(store,run,config,pubmed,adapters):
         save(store,run,'plan',plan)
     if plan['policy']!=TRIAGE_POLICY or plan['original_config_hash']!=state['config_hash']:
         raise ValueError('Backfill frozen identity differs')
+    # Make already-ingested pages reviewable even if a later source paused.
+    # This is idempotent, preserves exclusions/analysis, and never marks source
+    # coverage complete. Do it once per invocation, not for every source page.
+    select_candidates(store,run,None)
     audit=json.loads(state['audit'])
     if audit['scope'].get('backfill',{}).get('status')!='RUNNING':
         audit['scope']['backfill']={'status':'RUNNING','checkpoint_namespace':PREFIX,
@@ -114,6 +118,7 @@ def resume(store,run,config,pubmed,adapters):
                 raise
         save(store,run,'source:'+name,complete)
         source_progress(store,run,name,complete)
+        select_candidates(store,run,None)
         result[name]=complete
     # Original ETL configuration, windows and source audit remain untouched.
     counts=select_candidates(store,run,None)
@@ -129,3 +134,4 @@ def resume(store,run,config,pubmed,adapters):
         ('UPDATE wl_runs SET audit=? WHERE run_key=?',(json.dumps(audit),run)),
         ('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',(run,PREFIX+'complete',json.dumps(result)))])
     return True
+
