@@ -21,6 +21,18 @@ def row(key, title, decision="include", priority="medium"):
 
 
 class LayoutTest(unittest.TestCase):
+    def test_backfill_shortfall_is_explicit_in_report_body(self):
+        audit=json.loads(self.state['audit'])
+        audit['scope']={'backfill':{'status':'COMPLETED_WITH_GAPS','sources':{'Europe PMC':{
+            'status':'PARTIAL','window_start':'2026-10-09','window_end':'2026-10-09',
+            'gaps':[{'window_start':'2026-10-09','window_end':'2026-10-09',
+                     'reported_total':87,'count':85,'missing_count':2}]}}}}
+        self.state['audit']=json.dumps(audit)
+        blocks,_=rf.build_report(self.state,[row('PMID:1','Gastric cancer clinical study')])
+        text=json.dumps(blocks,ensure_ascii=False)
+        self.assertIn('上游报告87条，实际取回85条，缺口2条',text)
+        self.assertIn('未标记完整覆盖',text)
+
     def setUp(self):
         self.state = {"run_key": "weekly-literature:2026-10-12:Asia/Shanghai",
                       "window_start": "2026-09-29", "window_end": "2026-10-11",
@@ -320,7 +332,9 @@ class CardMetadataTest(unittest.TestCase):
                 def __exit__(self,*args):pass
                 def read(self):return b"{}"
             return Response()
-        audit={"raw_hits":1000,"selected":100,"supplementary_sources":{"Europe PMC":{"status":"PARTIAL"}}}
+        audit={"raw_hits":1000,"selected":100,
+               "supplementary_sources":{"Europe PMC":{"status":"COMPLETE_FOR_QUERY"}},
+               "scope":{"backfill":{"sources":{"Europe PMC":{"status":"PARTIAL"}}}}}
         def read(url, **kwargs):
             return json.dumps({'properties':seen[-1]['properties'] if seen else properties}).encode()
         with patch.object(rf,"request",side_effect=read),patch("urllib.request.urlopen",output):
@@ -345,6 +359,7 @@ class CardMetadataTest(unittest.TestCase):
 
 if __name__=="__main__":
     unittest.main()
+
 
 
 

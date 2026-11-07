@@ -448,7 +448,7 @@ def ingest_article(store, key, article):
 
 
 def run_supplements(store, key, config, run, adapters):
-    from supplements import harvest
+    from supplements import harvest, harvest_windowed
     audit = {}
     for name, settings in config['supplementary_sources'].items():
         if not isinstance(settings, dict) or not settings.get('enabled') or name not in adapters:
@@ -458,10 +458,23 @@ def run_supplements(store, key, config, run, adapters):
         start = min(run['window_start'], gaps[0]['start'] or run['window_start'])
         end = run['window_end']
         try:
-            audit[name] = harvest(store, key, adapters[name], settings['queries'], start, end,
-                                  lambda article: ingest_article(store, key, article), settings['max_pages'],
-                                  ingest_many=lambda articles: ingest_articles(store, key, articles))
-            store.sql("UPDATE wl_source_gaps SET status='CLOSED' WHERE source=? AND window_start>=? AND window_end<=?", (name,start,end))
+            if getattr(adapters[name],'supports_date_slicing',False) and settings.get('max_pages') is None:
+                audit[name] = harvest_windowed(store,key,adapters[name],settings['queries'],start,end,
+                    lambda article:ingest_article(store,key,article),
+                    ingest_many=lambda articles:ingest_articles(store,key,articles))
+            else:
+                audit[name] = harvest(store, key, adapters[name], settings['queries'], start, end,
+                                      lambda article: ingest_article(store, key, article), settings['max_pages'],
+                                      ingest_many=lambda articles: ingest_articles(store, key, articles))
+            if audit[name]['status']=='COMPLETE_FOR_QUERY':
+                store.sql("UPDATE wl_source_gaps SET status='CLOSED' WHERE source=? AND window_start>=? AND window_end<=?", (name,start,end))
+            else:
+                missing=audit[name].get('gaps',[])
+                gap_start=min((gap['window_start'] for gap in missing),default=start)
+                gap_end=max((gap['window_end'] for gap in missing),default=end)
+                store.sql('INSERT INTO wl_source_gaps VALUES(?,?,?,?,?,?) '
+                    'ON CONFLICT(source,run_key) DO UPDATE SET status=excluded.status,error=excluded.error',
+                    (name,key,gap_start,gap_end,'PARTIAL','UPSTREAM_TERMINAL_COUNT_MISMATCH'))
         except (ValueError, RuntimeError, urllib.error.URLError, TimeoutError, ET.ParseError) as exc:
             if isinstance(exc, RuntimeError) and exc.args == ('D1_DAILY_QUOTA_EXCEEDED',):
                 raise  # No audit write, no next source, no retry until reset.

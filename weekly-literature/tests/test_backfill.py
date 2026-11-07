@@ -23,6 +23,26 @@ class Adapter:
 
 
 class BackfillTest(unittest.TestCase):
+    def test_terminal_partial_source_finishes_with_explicit_retryable_gap(self):
+        from unittest.mock import patch
+        def resolved(store,run,adapter,queries,start,end,*args,**kwargs):
+            if adapter.name=='Europe PMC':
+                return {'status':'PARTIAL','window_start':start,'window_end':end,'missing_count':2,
+                    'gaps':[{'window_start':start,'window_end':end,'reported_total':87,'count':85,'missing_count':2}]}
+            return {'status':'COMPLETE_FOR_QUERY','window_start':start,'window_end':end}
+        with patch.object(backfill,'harvest_windowed',side_effect=resolved):
+            self.assertTrue(self.run_backfill())
+        state=self.store.sql('SELECT * FROM wl_runs')[0]
+        audit=json.loads(state['audit'])
+        self.assertEqual(audit['scope']['backfill']['status'],'COMPLETED_WITH_GAPS')
+        self.assertEqual(audit['scope']['expanded_retrieval'],'PARTIAL')
+        self.assertFalse(backfill.needed(state))
+        self.assertEqual(audit['supplementary_sources'],self.audit['supplementary_sources'])
+        gap=self.store.sql('SELECT * FROM wl_source_gaps')[0]
+        self.assertEqual(gap['status'],'PARTIAL')
+        self.assertEqual(gap['run_key'],self.run+':scope-backfill')
+        self.assertEqual(self.store.sql('SELECT * FROM wl_history'),[])
+
     def setUp(self):
         self.store=Store(':memory:');self.store.migrate();self.addCleanup(self.store.db.close)
         self.run='synthetic-run'
