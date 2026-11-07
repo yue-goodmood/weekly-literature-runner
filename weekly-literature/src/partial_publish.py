@@ -70,6 +70,10 @@ def final_index(state, rows, entries):
         for name,info in backfill.get('sources',{}).items():
             blocks.append(_block('paragraph','补检 '+name+'：'+str(info.get('status','UNKNOWN'))+
                 '；窗口：'+str(info.get('window_start','未检索'))+' 至 '+str(info.get('window_end','未检索'))))
+            for gap in info.get('gaps',[]):
+                blocks.append(_block('paragraph','来源缺口 '+name+'｜'+gap['window_start']+' 至 '+gap['window_end']+
+                    '：上游报告'+str(gap['reported_total'])+'条，实际取回'+str(gap['count'])+
+                    '条，缺口'+str(gap['missing_count'])+'条；无后续游标，多次独立取页一致，未标记完整覆盖。'))
     blocks.append(_block('paragraph','COMPLETE_FOR_QUERY仅代表预设查询完成，不代表全部来源完整覆盖。分析基于既有证据材料，不替代全文医学审核或患者诊疗。'))
     return format_blocks(blocks), included
 
@@ -197,3 +201,4 @@ def finish_progress(store, run):
                            run.split(':')[1]+'｜每周文献（已完成·分批索引）')
     store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
               (run, 'notion:partial:finished:v1', 'true'))
+

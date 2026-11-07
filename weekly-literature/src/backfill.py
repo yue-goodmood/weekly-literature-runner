@@ -122,6 +122,15 @@ def resume(store,run,config,pubmed,adapters):
                     'previous_total':getattr(exc,'previous_total',None),
                     'observed_total':getattr(exc,'observed_total',None)})
                 raise
+        if complete.get('status')=='PARTIAL':
+            # A terminal coverage gap remains retryable by a later ETL; it is
+            # never silently closed or confused with the original source audit.
+            gaps=complete.get('gaps',[])
+            gap_start=min((gap['window_start'] for gap in gaps),default=start)
+            gap_end=max((gap['window_end'] for gap in gaps),default=end)
+            store.sql('INSERT INTO wl_source_gaps VALUES(?,?,?,?,?,?) '
+                'ON CONFLICT(source,run_key) DO UPDATE SET status=excluded.status,error=excluded.error',
+                (name,run+':scope-backfill',gap_start,gap_end,'PARTIAL','UPSTREAM_TERMINAL_COUNT_MISMATCH'))
         save(store,run,'source:'+name,complete)
         source_progress(store,run,name,complete)
         select_candidates(store,run,None)
@@ -134,8 +143,11 @@ def resume(store,run,config,pubmed,adapters):
         'ON a.run_key=c.run_key AND a.evidence_key=c.evidence_key '
         'WHERE c.run_key=? AND c.selected=1',(run,))[0]['n']
     audit.update(counts,analyzed=analyzed,deferred=0)
-    audit['scope'].update(coverage='original_windows_backfilled',expanded_retrieval='COMPLETE_FOR_QUERY',
-        backfill={'status':'COMPLETE_FOR_QUERY','checkpoint_namespace':PREFIX,'sources':result})
+    partial=any(value.get('status')=='PARTIAL' for value in result.values())
+    audit['scope'].update(coverage='original_windows_backfilled_with_gaps' if partial else 'original_windows_backfilled',
+        expanded_retrieval='PARTIAL' if partial else 'COMPLETE_FOR_QUERY',
+        backfill={'status':'COMPLETED_WITH_GAPS' if partial else 'COMPLETE_FOR_QUERY',
+                  'checkpoint_namespace':PREFIX,'sources':result})
     store.batch([
         ('UPDATE wl_runs SET audit=? WHERE run_key=?',(json.dumps(audit),run)),
         ('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',(run,PREFIX+'complete',json.dumps(result)))])

@@ -225,6 +225,10 @@ def build_report(state, rows):
         for name,info in windows.items():
             bullet('补检 '+name+'：'+str(info.get('status','未完成' if info.get('window_start') else 'NOT_ATTEMPTED'))+
                 '；窗口：'+str(info.get('window_start','未检索'))+' 至 '+str(info.get('window_end','未检索')))
+            for gap in info.get('gaps',[]):
+                bullet('来源缺口 '+name+'｜'+gap['window_start']+' 至 '+gap['window_end']+
+                    '：上游报告'+str(gap['reported_total'])+'条，实际取回'+str(gap['count'])+
+                    '条，缺口'+str(gap['missing_count'])+'条；无后续游标，多次独立取页一致，未标记完整覆盖。')
     para("PUBLISHED表示已送达Notion并读回验证，不等于全部来源覆盖完整；摘要分析不能替代全文审阅，也不构成患者诊疗建议。")
     para("稳定追溯键：" + state["run_key"] + "｜排版版本：" + REPORT_STYLE_VERSION)
     return format_blocks(page), len(papers)
@@ -321,6 +325,7 @@ def update_report_metadata(run, page, included, audit, token, data_source):
     properties = schema.get("properties", {})
     date = run.split(":")[1]
     statuses = [v.get("status") for v in audit.get("supplementary_sources", {}).values()]
+    statuses += [v.get('status') for v in audit.get('scope',{}).get('backfill',{}).get('sources',{}).values()]
     partial = any(x not in ("COMPLETE", "COMPLETE_FOR_QUERY") for x in statuses)
     values = {}
     title = next((k for k, v in properties.items() if v.get("type") == "title"), None)
@@ -362,6 +367,7 @@ def update_report_metadata(run, page, included, audit, token, data_source):
             matches = got == wanted
         if not matches:
             raise ValueError('Notion report metadata readback mismatch: '+name)
+
 
 
 

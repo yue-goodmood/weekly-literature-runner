@@ -148,7 +148,16 @@ records and cursor cycles retire only the affected snapshot. Date partitions
 that fail validation split into durable disjoint child windows, down to one
 day, and resume completed siblings without replay. A one-day anomaly still
 pauses without a completion receipt; duplicate removal alone never proves
-coverage. Backfill exposes already ingested candidates to medical review at
+coverage. A terminal response that advertises more records than it exposes
+requires two fresh generations with the exact same retrieved identity set.
+All available records are ingested, but that partition receives a PARTIAL gap
+receipt, never COMPLETE_FOR_QUERY. Source totals, retrieved counts, missing
+counts and affected dates are retained in the private audit and report.
+Changed sets remain paused. There is at most one fresh confirmation per call.
+Other date partitions and sources continue; terminal backfill is labelled
+COMPLETED_WITH_GAPS, and final Notion cards remain data-incomplete. The affected
+date span stays in the source-gap index for later ETL retry. Original audits,
+saved decisions and frozen raw pages remain intact. Backfill exposes already ingested candidates to medical review at
 the next invocation and after each completed source, independently of later
 source failures. Process and daily resource limits remain unchanged.
 

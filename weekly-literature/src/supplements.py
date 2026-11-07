@@ -151,6 +151,13 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
             failure.partition_window=[start,end]
             failure.previous_total=expected
             failure.observed_total=observed
+            ids=[article['source_id'] for article in page['records']]
+            failure.source_ids=sorted({value[3:] for value in seen if value.startswith('id:')}|set(ids))
+            failure.available_records=page['records']
+            failure.generation=generation
+            failure.terminal_gap=(reason=='SOURCE_CURSOR_INVALID' and page['next'] is None
+                and len(ids)==len(set(ids)) and not seen.intersection('id:'+i for i in ids)
+                and len(failure.source_ids)<expected)
             raise failure
         # Old frozen pages are migrated once, without re-ingestion. Thereafter
         # the pointer and indexed identity ledger resume directly at the next page.
@@ -230,7 +237,7 @@ def harvest(store, run, adapter, queries, start, end, ingest, max_pages=None, in
 
 
 def harvest_partition(store, run, adapter, name, query, start, end, ingest,
-                      ingest_many, namespace):
+                      ingest_many, namespace, _confirmation=False):
     """Replace only invalid spans with durable, disjoint smaller date spans.
 
     A split is committed before child work. On resume a poisoned parent is
@@ -239,6 +246,10 @@ def harvest_partition(store, run, adapter, name, query, start, end, ingest,
     """
     from pipeline import digest
     unit=namespace+getattr(adapter,'checkpoint_namespace','')+'partition-split:v1:'+digest([name,query,start,end])
+    resolved=store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit=?',
+                       (run,unit+':resolved-gap:v1'))
+    if resolved:
+        return [json.loads(resolved[0]['payload'])]
     rows=store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit=?',(run,unit))
     split=json.loads(rows[0]['payload']) if rows else None
     if not split:
@@ -247,9 +258,40 @@ def harvest_partition(store, run, adapter, name, query, start, end, ingest,
                            ingest_many=ingest_many,namespace=namespace)
             return [{'window_start':start,'window_end':end,
                      'status':result['status'],'count':result['counts'][name]}]
-        except SourceSnapshotChanged:
+        except SourceSnapshotChanged as exc:
             left,right=dt.date.fromisoformat(start),dt.date.fromisoformat(end)
             if left==right:
+                # A terminal upstream response can report deleted/unavailable
+                # records in its total while exposing no further cursor. Two
+                # fresh generations must agree before resolving WITH A GAP.
+                # This never creates a COMPLETE_FOR_QUERY receipt.
+                if getattr(exc,'terminal_gap',False):
+                    if ingest_many:
+                        ingest_many(exc.available_records)
+                    else:
+                        for article in exc.available_records: ingest(article)
+                    key=unit+':gap-observation:v1'
+                    prior=store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit=?',(run,key))
+                    prior=json.loads(prior[0]['payload']) if prior else {}
+                    fingerprint=digest([exc.previous_total,exc.source_ids])
+                    attempts=(prior.get('observations',0) if prior.get('fingerprint')==fingerprint else 0)
+                    attempts+=int(prior.get('generation')!=exc.generation)
+                    observation={'fingerprint':fingerprint,'generation':exc.generation,'observations':attempts}
+                    store.sql('INSERT OR REPLACE INTO wl_checkpoints VALUES(?,?,?)',(run,key,json.dumps(observation)))
+                    if attempts>=2:
+                        part={'window_start':start,'window_end':end,'status':'PARTIAL',
+                            'reason':'UPSTREAM_TERMINAL_COUNT_MISMATCH',
+                            'count':len(exc.source_ids),'reported_total':exc.previous_total,
+                            'missing_count':exc.previous_total-len(exc.source_ids),
+                            'independent_observations':attempts}
+                        store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
+                                  (run,unit+':resolved-gap:v1',json.dumps(part)))
+                        return [part]
+                    if not _confirmation:
+                        # At most one fresh confirmation in this invocation.
+                        # Drift on that confirmation defers to the next run.
+                        return harvest_partition(store,run,adapter,name,query,start,end,
+                                                 ingest,ingest_many,namespace,True)
                 raise
             middle=left+(right-left)//2
             split={'windows':[[start,middle.isoformat()],
@@ -276,16 +318,18 @@ def harvest_windowed(store, run, adapter, queries, start, end, ingest,
                        ingest_many=ingest_many,namespace=namespace)
     from pipeline import digest
     counts, partitions = {}, {}
+    gaps=[]
     for name,query in queries.items():
         identity=digest([name,query,start,end,None])
         prefix=namespace+getattr(adapter,'checkpoint_namespace','')
         complete_unit=prefix+'supplement-complete:'+adapter.name+':'+identity
-        complete=store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit=?',
-                           (run,complete_unit))
+        complete=store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit IN (?,?)',
+                           (run,complete_unit,complete_unit+':resolved-partial:v1'))
         if complete:
             receipt=json.loads(complete[0]['payload'])
             counts[name]=receipt['count']
             partitions[name]=receipt.get('partitions',[{'window_start':start,'window_end':end}])
+            gaps.extend(p for p in partitions[name] if p.get('status')=='PARTIAL')
             continue
         def plan():
             legacy=prefix+'supplement:'+adapter.name+':'+digest([name,query,start,end,None])
@@ -314,13 +358,16 @@ def harvest_windowed(store, run, adapter, queries, start, end, ingest,
             parts.extend(children)
         # These are summed source hits, not an assertion of unique articles across
         # live index snapshots. Canonical ingestion independently deduplicates IDs.
+        partial=any(part['status']=='PARTIAL' for part in parts)
+        gaps.extend(part for part in parts if part['status']=='PARTIAL')
         store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)',
-            (run,complete_unit,json.dumps({'count':total,'partitions':parts,
+            (run,complete_unit+(':resolved-partial:v1' if partial else ''),json.dumps({'count':total,'partitions':parts,
                 'count_semantics':'sum_of_disjoint_window_hits'})))
         counts[name],partitions[name]=total,parts
-    return {'status':'COMPLETE_FOR_QUERY','counts':counts,'window_start':start,
+    return {'status':'PARTIAL' if gaps else 'COMPLETE_FOR_QUERY','counts':counts,'window_start':start,
         'window_end':end,'checkpoint_namespace':namespace+getattr(adapter,'checkpoint_namespace',''),
-        'partitions':partitions,'count_semantics':'source_hits_canonical_articles_deduplicated_separately'}
+        'partitions':partitions,'gaps':gaps,'missing_count':sum(g['missing_count'] for g in gaps),
+        'count_semantics':'retrieved_source_hits_canonical_articles_deduplicated_separately'}
 
 
 

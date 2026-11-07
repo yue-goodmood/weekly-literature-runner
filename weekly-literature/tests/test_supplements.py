@@ -8,6 +8,50 @@ from pipeline import Store, aliases, run_supplements
 from supplements import EuropePMC, Arxiv, harvest, harvest_windowed, SourceSnapshotChanged, identity_ledger
 
 class SupplementTests(unittest.TestCase):
+    def test_terminal_shortfall_requires_fresh_agreement_and_stays_partial(self):
+        from pipeline import digest
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            supports_date_slicing=True
+            calls=0
+            fail=True
+            def page(self,*args):
+                self.calls+=1
+                if self.calls==2 and self.fail: raise TimeoutError()
+                return {'records':[{'source_id':'a'},{'source_id':'b'}],'total':3,'next':None}
+        adapter=Adapter();available={}
+        ingest=lambda row:available.update({row['source_id']:row})
+        args=(store,'r',adapter,{'q':'x'},'2026-01-01','2026-01-01',ingest)
+        with self.assertRaises(TimeoutError): harvest_windowed(*args)
+        self.assertEqual(set(available),{'a','b'})
+        adapter.fail=False
+        result=harvest_windowed(*args)
+        self.assertEqual(result['status'],'PARTIAL')
+        self.assertEqual(result['missing_count'],1)
+        self.assertEqual(result['gaps'][0]['reported_total'],3)
+        self.assertEqual(result['gaps'][0]['independent_observations'],2)
+        self.assertEqual(adapter.calls,3)
+        complete='supplement-complete:test:'+digest(['q','x','2026-01-01','2026-01-01',None])
+        self.assertEqual(store.sql('SELECT 1 FROM wl_checkpoints WHERE run_key=? AND unit=?',('r',complete)),[])
+        self.assertEqual(harvest_windowed(*args),result)
+        self.assertEqual(adapter.calls,3)
+
+    def test_changing_terminal_sets_do_not_resolve_a_gap(self):
+        store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
+        class Adapter:
+            name='test'
+            supports_date_slicing=True
+            calls=0
+            def page(self,*args):
+                self.calls+=1
+                return {'records':[{'source_id':str(self.calls)}],'total':3,'next':None}
+        adapter=Adapter()
+        for _ in range(3):
+            with self.assertRaises(SourceSnapshotChanged):
+                harvest_windowed(store,'r',adapter,{'q':'x'},'2026-01-01','2026-01-01',lambda r:None)
+        self.assertEqual(store.sql("SELECT 1 FROM wl_checkpoints WHERE unit LIKE '%:resolved-gap:v1'"),[])
+
     def test_poisoned_page_splits_and_resumes_without_replaying_parent(self):
         store=Store(':memory:');store.migrate();self.addCleanup(store.db.close)
         class Adapter:
