@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import urllib.error
+import urllib.request
 import uuid
 from zoneinfo import ZoneInfo
 
@@ -304,6 +305,26 @@ def execute(mode, store=None, today=None, _reserved=False):
                     raise RuntimeError('D1_DAILY_QUOTA_EXCEEDED') from None
 
 
+def d1_storage_size():
+    """Read just the D1 database size; never log its API response."""
+    token = os.environ.get('CLOUDFLARE_API_TOKEN')
+    account = os.environ.get('CLOUDFLARE_ACCOUNT_ID')
+    database = os.environ.get('LITERATURE_D1_ID')
+    if not all((token, account, database)):
+        return None
+    url = f'https://api.cloudflare.com/client/v4/accounts/{account}/d1/database/{database}?fields=file_size'
+    try:
+        req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            result = json.loads(response.read(16_384))
+        size = (result.get('result') or {}).get('file_size')
+        if result.get('success') is True and type(size) is int and 0 <= size <= 100_000_000_000:
+            return size
+    except (OSError, ValueError, AttributeError, TypeError):
+        pass
+    return None
+
+
 def safe_main(mode, worker=execute):
     # Never tee, upload, or preserve private logs as CI artifacts. A TemporaryFile
     # bounds memory and is automatically unlinked, including on ordinary errors.
@@ -372,6 +393,12 @@ def safe_main(mode, worker=execute):
                     code = getattr(exc.cause, 'safe_d1_code', None)
                     if type(code) is int and 1000 <= code <= 99999:
                         label += '_CODE_'+str(code)
+                        if exc.phase == 'ETL' and exc.cause.code == 400 and code == 7500:
+                            size_bytes = d1_storage_size()
+                            if size_bytes is not None:
+                                label += '_D1_BYTES_'+str(size_bytes)
+                            elif all(os.environ.get(key) for key in REQUIRED[:3]):
+                                label += '_D1_SIZE_UNAVAILABLE'
                     limit = getattr(exc.cause, 'safe_d1_limit', '')
                     if limit in ('DATABASE_SIZE', 'PAYLOAD_SIZE'):
                         label += '_'+limit
