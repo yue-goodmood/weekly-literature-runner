@@ -42,6 +42,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           LITERATURE_D1_ID: ${{ secrets.LITERATURE_D1_ID }}
+          LITERATURE_ACTIVE_D1_NAME: weekly-literature-active-202611
           NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
           NOTION_DATA_SOURCE_ID: ${{ secrets.NOTION_DATA_SOURCE_ID }}
           NOTION_ARTICLE_DATA_SOURCE_ID: ${{ secrets.NOTION_ARTICLE_DATA_SOURCE_ID }}
@@ -50,7 +51,7 @@ jobs:
           WORK_BUDGET_SECONDS: '600'
           D1_RUN_READ_BUDGET: '250000'
           D1_RUN_WRITE_BUDGET: '10000'
-        run: PYTHONPATH=weekly-literature/src python weekly-literature/src/public_runner.py --mode "$MODE"
+        run: PYTHONPATH=weekly-literature/src python weekly-literature/src/active_d1.py "$MODE"
 
 
 
