@@ -369,6 +369,16 @@ def safe_main(mode, worker=execute):
                         trace = trace.tb_next
                     if locations:
                         label += '_'+locations[-1]
+                    code = getattr(exc.cause, 'safe_d1_code', None)
+                    if type(code) is int and 1000 <= code <= 99999:
+                        label += '_CODE_'+str(code)
+                    limit = getattr(exc.cause, 'safe_d1_limit', '')
+                    if limit in ('DATABASE_SIZE', 'PAYLOAD_SIZE'):
+                        label += '_'+limit
+                    kind = getattr(exc.cause, 'safe_checkpoint_kind', '')
+                    size = getattr(exc.cause, 'safe_checkpoint_size', '')
+                    if kind in ('IDS', 'METADATA', 'CONFIG', 'OTHER') and size in ('GE_2MB', 'GE_1MB', 'LT_1MB'):
+                        label += '_CHECKPOINT_'+kind+'_'+size
                 if reason in ('VALIDATION_ERROR','INVALID_JSON','INVALID_REQUEST_URL','MISSING_VERSION','TOO_MANY_SQL_VARIABLES'): label+='_'+reason
             else:
                 label = exc.phase+'_'+diagnostic(exc.cause)
