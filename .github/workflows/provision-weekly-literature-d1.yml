@@ -1,0 +1,65 @@
+name: Provision empty weekly literature D1
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/provision-weekly-literature-d1.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: weekly-literature-d1-provision
+  cancel-in-progress: false
+jobs:
+  provision:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      LITERATURE_D1_ID: ${{ secrets.LITERATURE_D1_ID }}
+    steps:
+      - name: Provision the replacement only; do not cut over
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.error, urllib.parse, urllib.request
+          name = 'weekly-literature-active-202611'
+          try:
+              account, token, old = (os.environ[k] for k in (
+                  'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_API_TOKEN', 'LITERATURE_D1_ID'))
+              if not all((account, token, old)):
+                  raise ValueError()
+              base = 'https://api.cloudflare.com/client/v4/accounts/' + account + '/d1/database'
+              def call(url, body=None):
+                  headers = {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}
+                  data = None if body is None else json.dumps(body).encode()
+                  with urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=20) as response:
+                      obj = json.loads(response.read(1_000_000))
+                  if obj.get('success') is not True:
+                      raise ValueError()
+                  return obj
+              def matching():
+                  out = []
+                  for index in range(1, 11):
+                      reply = call(base + '?' + urllib.parse.urlencode({'page': index, 'per_page': 100}))
+                      rows = reply['result']
+                      out.extend(row for row in rows if row.get('name') == name)
+                      total = reply.get('result_info', {}).get('total_count')
+                      if (type(total) is int and index * 100 >= total) or len(rows) < 100:
+                          return out
+                  raise ValueError()
+              rows = matching()
+              if len(rows) > 1:
+                  raise ValueError()
+              provisioned = rows[0] if rows else call(base, {'name': name})['result']
+              if not provisioned.get('uuid') or provisioned['uuid'].lower() == old.lower():
+                  raise ValueError()
+              verified = call(base + '/' + provisioned['uuid'])['result']
+              if verified.get('name') != name:
+                  raise ValueError()
+          except urllib.error.HTTPError as exc:
+              raise SystemExit('weekly-literature-d1: HTTP_' + str(exc.code)) from None
+          except Exception:
+              raise SystemExit('weekly-literature-d1: PROVISION_FAILED_PRIVATE_DETAILS_SUPPRESSED') from None
+          print('weekly-literature-d1: REPLACEMENT_EXISTS_CUTOVER_NOT_PERFORMED')
+          PY
