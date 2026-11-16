@@ -169,7 +169,7 @@ def request(url, data=None, headers=None):
             time.sleep(2 ** attempt)
 
 class Store:
-    def __init__(self, local=None):
+    def __init__(self, local=None, *, database_id=None):
         self.quota_exhausted = False
         self.usage_complete = True
         self.rows_read = self.rows_written = 0
@@ -182,7 +182,7 @@ class Store:
             self.db.row_factory = sqlite3.Row
         else:
             self.url = 'https://api.cloudflare.com/client/v4/accounts/{}/d1/database/{}/query'.format(
-                os.environ['CLOUDFLARE_ACCOUNT_ID'], os.environ['LITERATURE_D1_ID'])
+                os.environ['CLOUDFLARE_ACCOUNT_ID'], database_id or os.environ['LITERATURE_D1_ID'])
             self.headers = {'Authorization': 'Bearer ' + os.environ['CLOUDFLARE_API_TOKEN'], 'Content-Type': 'application/json'}
 
     def remote(self, body):

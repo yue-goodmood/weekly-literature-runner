@@ -7,13 +7,14 @@ import re
 
 ROOT = Path(__file__).resolve().parents[1]
 ALLOWED = {'README.md', '.gitignore', '.github/workflows/literature.yml',
-           '.github/workflows/test.yml', 'tools/audit_export.py',
+           '.github/workflows/test.yml', '.github/workflows/provision-weekly-literature-d1.yml',
+           'tools/audit_export.py',
            'weekly-literature/config/topics.json'}
 ALLOWED.update('weekly-literature/src/'+name+'.py' for name in (
     'pipeline','publish','supplements','report_format','verify_publication',
-    'retune_queue','recover','public_runner','partial_publish','layout_upgrade','backfill'))
+    'retune_queue','recover','public_runner','partial_publish','layout_upgrade','backfill','active_d1'))
 ALLOWED.update('weekly-literature/tests/test_'+name+'.py' for name in (
-    'pipeline','publish','report_format','retune_queue','supplements','public_runner','partial_publish','backfill'))
+    'pipeline','publish','report_format','retune_queue','supplements','public_runner','partial_publish','backfill','active_d1'))
 ALLOWED.update('weekly-literature/migrations/000'+str(n)+'.sql' for n in range(1,7))
 
 

@@ -335,7 +335,7 @@ def safe_main(mode, worker=execute):
         allowed = {'DISABLED', 'READY', 'RETRIAGED', 'ETL_CHECKPOINTED',
                    'PUBLICATION_VERIFIED', 'AWAITING_REVIEW', 'NO_PENDING_PUBLICATION',
                    'PARTIAL_SYNC_VERIFIED',
-                   'NO_PENDING_ETL','BACKFILL_COMPLETED','AWAITING_BACKFILL',
+                   'NO_PENDING_ETL','BACKFILL_COMPLETED','AWAITING_BACKFILL', 'DEDUPE_SEED_CHECKPOINTED',
                    'PAUSED_RETRIEVAL_DAILY_BUDGET'}
         if status not in allowed:
             raise ConfigurationError()
