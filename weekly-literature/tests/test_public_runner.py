@@ -22,6 +22,20 @@ class PublicRunnerTest(unittest.TestCase):
             self.assertEqual(r.safe_main('etl', worker), 1)
         self.assertEqual(out.getvalue(), 'weekly-literature: ETL_HTTP_400_D1\n')
 
+    def test_d1_checkpoint_http_error_emits_only_safe_metadata(self):
+        def worker(mode):
+            cause = urllib.error.HTTPError('https://example.org/private', 400, 'PRIVATE', {}, None)
+            cause.safe_service = 'D1'
+            cause.safe_d1_code = 7500
+            cause.safe_d1_limit = 'DATABASE_SIZE'
+            cause.safe_checkpoint_kind = 'METADATA'
+            cause.safe_checkpoint_size = 'LT_1MB'
+            cause.private_detail = {'errors': [{'message': 'PRIVATE SQL and payload'}]}
+            raise r.PhaseError('ETL', cause)
+        code, out = self.output(worker)
+        self.assertEqual(code, 1)
+        self.assertEqual(out.strip(), 'weekly-literature: ETL_HTTP_400_D1_CODE_7500_DATABASE_SIZE_CHECKPOINT_METADATA_LT_1MB')
+
     def setUp(self):
         # Existing phase tests isolate orchestration; ledger integration below
         # exercises real SQLite receipts, crashes, UTC rollover and exhaustion.
