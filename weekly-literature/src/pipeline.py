@@ -503,6 +503,53 @@ def run_supplements(store, key, config, run, adapters):
     return audit
 
 
+def pubmed_metadata_checkpoint(store, run, batch, source):
+    """Keep legacy reads and use small checkpoint slices for a rejected write."""
+    key = digest(batch)
+    manifest = 'checkpoint:metadata-slices:v1:' + key
+    read = 'SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit=?'
+    write = 'INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)'
+    saved = store.sql(read, (run, manifest))
+    if saved:
+        doc = json.loads(saved[0]['payload'])
+        prefix = manifest + ':' + doc['sha256'] + ':'
+        parts = []
+        for idx in range(doc['count']):
+            rows = store.sql(read, (run, prefix+str(idx)))
+            if not rows:
+                raise ValueError('Missing PubMed metadata checkpoint slice')
+            parts.append(rows[0]['payload'])
+        payload = ''.join(parts)
+        if hashlib.sha256(payload.encode('ascii')).hexdigest() != doc['sha256']:
+            raise ValueError('PubMed metadata checkpoint checksum mismatch')
+        return json.loads(payload)
+    value = None
+    def fetch():
+        nonlocal value
+        value = source.records(batch)
+        return value
+    try:
+        return store.checkpoint(run, 'metadata:' + key, fetch)
+    except urllib.error.HTTPError as exc:
+        if (exc.code != 400 or getattr(exc, 'safe_service', None) != 'D1'
+                or getattr(exc, 'safe_d1_code', None) != 7500
+                or getattr(exc, 'safe_checkpoint_kind', None) != 'METADATA'
+                or getattr(exc, 'safe_d1_limit', None) == 'DATABASE_SIZE'
+                or value is None):
+            raise
+        payload = json.dumps(value, ensure_ascii=True, separators=(',', ':'))
+        if not 32_000 < len(payload) <= 2_048_000:
+            raise
+    checksum = hashlib.sha256(payload.encode('ascii')).hexdigest()
+    parts = [payload[i:i+32_000] for i in range(0, len(payload), 32_000)]
+    prefix = manifest + ':' + checksum + ':'
+    for idx, part in enumerate(parts):
+        store.sql(write, (run, prefix+str(idx), part))
+    # Publish the manifest only after all slices are durable.
+    store.sql(write, (run, manifest, json.dumps({'sha256': checksum, 'count': len(parts)})))
+    return value
+
+
 def run_etl(store, source, config, run_date, supplements=None):
     config_hash = digest(config)
     key = 'weekly-literature:' + run_date + ':Asia/Shanghai'
@@ -541,7 +588,7 @@ def run_etl(store, source, config, run_date, supplements=None):
         unit = 'ingested:' + digest(batch)
         if unit in ingested_units:
             continue
-        articles = store.checkpoint(key, 'metadata:' + digest(batch), lambda: source.records(batch))
+        articles = pubmed_metadata_checkpoint(store, key, batch, source)
         ingest_articles(store, key, articles)
         store.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES(?,?,?)', (key,unit,'true'))
     supplementary_audit = run_supplements(store, key, config, run, supplements or {})

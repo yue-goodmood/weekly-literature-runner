@@ -21,6 +21,25 @@ class Source:
             ('1','Rectal cancer organ preservation','10.1/test'),('2','Rectal cancer duplicate','https://doi.org/10.1/TEST.'),('3','Diabetes medication','10.1/other')]]
 
 class PipelineTest(unittest.TestCase):
+    def test_metadata_checkpoint_replays_complete_slices(self):
+        from unittest.mock import Mock
+        source = Mock()
+        payload = [{'pmid': '1', 'abstract': '测' * 20000}]
+        source.records.return_value = payload
+        sql = self.store.sql
+        def reject_large_insert(stmt, params=()):
+            if (stmt.startswith('INSERT OR IGNORE INTO wl_checkpoints')
+                    and len(params) == 3 and len(params[-1]) > 64_000):
+                exc = urllib.error.HTTPError('https://example.org', 400, 'D1', {}, None)
+                exc.safe_service = 'D1'
+                exc.safe_d1_code = 7500
+                raise exc
+            return sql(stmt, params)
+        with patch.object(self.store, 'sql', side_effect=reject_large_insert):
+            self.assertEqual(p.pubmed_metadata_checkpoint(self.store, 'run', ['1'], source), payload)
+            self.assertEqual(p.pubmed_metadata_checkpoint(self.store, 'run', ['1'], source), payload)
+        source.records.assert_called_once_with(['1'])
+
     def test_unchanged_candidate_reingestion_writes_no_rows(self):
         article={'pmid':'77','title':'Rectal cancer clinical cohort','abstract':'40 patients'}
         p.ingest_articles(self.store,'r',[article])
