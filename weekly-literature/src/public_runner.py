@@ -356,6 +356,19 @@ def safe_main(mode, worker=execute):
                 service=getattr(exc.cause,'safe_service','')
                 reason=getattr(exc.cause,'safe_reason','')
                 if service in ('NOTION','D1','UPSTREAM'): label+='_'+service
+                if service == 'D1':
+                    # Public logs may show trusted repository call sites, never
+                    # the failed SQL, database identifiers, or response body.
+                    trace = exc.cause.__traceback__
+                    locations = []
+                    while trace is not None:
+                        frame = trace.tb_frame
+                        filename = frame.f_code.co_filename.rsplit('/', 1)[-1]
+                        if filename in ('pipeline.py', 'supplements.py', 'backfill.py') and frame.f_code.co_name not in ('request', 'remote', 'sql', 'batch'):
+                            locations.append(filename.removesuffix('.py').upper()+'_L'+str(trace.tb_lineno))
+                        trace = trace.tb_next
+                    if locations:
+                        label += '_'+locations[-1]
                 if reason in ('VALIDATION_ERROR','INVALID_JSON','INVALID_REQUEST_URL','MISSING_VERSION','TOO_MANY_SQL_VARIABLES'): label+='_'+reason
             else:
                 label = exc.phase+'_'+diagnostic(exc.cause)
