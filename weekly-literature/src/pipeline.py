@@ -143,6 +143,15 @@ def request(url, data=None, headers=None):
                     if exc.safe_service=='D1':
                         # Private D1 audit only; never stringify in public CI.
                         exc.private_detail={'errors':value.get('errors',[])[:3]}
+                        codes = [entry.get('code') for entry in exc.private_detail['errors']
+                                 if isinstance(entry, dict)]
+                        exc.safe_d1_code = next((code for code in codes
+                                                if type(code) is int and 1000 <= code <= 99999), None)
+                        lower = detail.lower()
+                        if any(term in lower for term in ('database or disk is full', 'sqlite_full', 'maximum database size')):
+                            exc.safe_d1_limit = 'DATABASE_SIZE'
+                        elif any(term in lower for term in ('string or blob too big', 'sqlite_toobig', 'row size', 'request body too large')):
+                            exc.safe_d1_limit = 'PAYLOAD_SIZE'
                     message=value.get('message','')
                     field=re.search(r'\bbody(?:\.[a-z_]+|\[\d+\])+',message)
                     if field: exc.safe_field=field[0]
@@ -259,7 +268,17 @@ class Store:
         if rows:
             return json.loads(rows[0]['payload'])
         value = fetch()
-        self.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES (?,?,?)', (run, unit, json.dumps(value)))
+        serialized = json.dumps(value)
+        try:
+            self.sql('INSERT OR IGNORE INTO wl_checkpoints VALUES (?,?,?)', (run, unit, serialized))
+        except urllib.error.HTTPError as exc:
+            exc.safe_checkpoint_kind = ('IDS' if unit.startswith('ids:') else
+                                        'METADATA' if unit.startswith('metadata:') else
+                                        'CONFIG' if unit == 'etl:frozen-config:v1' else 'OTHER')
+            # Record only a coarse size band in public diagnostics.
+            exc.safe_checkpoint_size = ('GE_2MB' if len(serialized) >= 2_000_000 else
+                                        'GE_1MB' if len(serialized) >= 1_000_000 else 'LT_1MB')
+            raise
         return value
 
 def aliases(article):
