@@ -36,6 +36,25 @@ class PublicRunnerTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out.strip(), 'weekly-literature: ETL_HTTP_400_D1_CODE_7500_DATABASE_SIZE_CHECKPOINT_METADATA_LT_1MB')
 
+    def test_d1_size_probe_uses_read_only_request_and_discards_private_fields(self):
+        env = {'CLOUDFLARE_API_TOKEN': 'test-token',
+               'CLOUDFLARE_ACCOUNT_ID': 'test-account', 'LITERATURE_D1_ID': 'test-database'}
+        with patch.dict(os.environ, env), patch.object(r.urllib.request, 'urlopen') as open_url:
+            open_url.return_value.__enter__.return_value.read.return_value = (
+                b'{"success":true,"result":{"file_size":499999744,"private":"hidden"}}')
+            self.assertEqual(r.d1_storage_size(), 499999744)
+            req = open_url.call_args.args[0]
+            self.assertEqual(req.get_method(), 'GET')
+            self.assertTrue(req.full_url.endswith('?fields=file_size'))
+
+    def test_d1_size_probe_does_not_retry_or_report_private_failure(self):
+        env = {'CLOUDFLARE_API_TOKEN': 'test-token',
+               'CLOUDFLARE_ACCOUNT_ID': 'test-account', 'LITERATURE_D1_ID': 'test-database'}
+        with patch.dict(os.environ, env), patch.object(r.urllib.request, 'urlopen',
+                side_effect=OSError('private error')) as open_url:
+            self.assertIsNone(r.d1_storage_size())
+            open_url.assert_called_once()
+
     def setUp(self):
         # Existing phase tests isolate orchestration; ledger integration below
         # exercises real SQLite receipts, crashes, UTC rollover and exhaustion.
