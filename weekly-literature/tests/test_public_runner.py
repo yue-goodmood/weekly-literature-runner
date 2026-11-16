@@ -11,6 +11,17 @@ import public_runner as r
 
 
 class PublicRunnerTest(unittest.TestCase):
+    def test_d1_http_failure_does_not_log_private_response(self):
+        def worker(mode):
+            cause = urllib.error.HTTPError('https://example.org/private', 400, 'PRIVATE', {}, None)
+            cause.safe_service = 'D1'
+            cause.private_detail = {'errors': [{'message': 'PRIVATE SQL and payload'}]}
+            raise r.PhaseError('ETL', cause)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(r.safe_main('etl', worker), 1)
+        self.assertEqual(out.getvalue(), 'weekly-literature: ETL_HTTP_400_D1\n')
+
     def setUp(self):
         # Existing phase tests isolate orchestration; ledger integration below
         # exercises real SQLite receipts, crashes, UTC rollover and exhaustion.
