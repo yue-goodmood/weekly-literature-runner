@@ -1,6 +1,6 @@
 {
-  "version": "digestive-pelvic-v1",
-  "backfill_existing_windows": true,
+  "version": "digestive-pelvic-focus-v2",
+  "backfill_existing_windows": false,
   "lookback_days": 14,
   "triage_policy": "digestive-pelvic-v1",
   "max_candidates": null,
@@ -9,21 +9,21 @@
     "digestive_pelvic"
   ],
   "queries": {
-    "digestive_pelvic": "(Esophageal Diseases[MeSH Terms] OR Gastrointestinal Diseases[MeSH Terms] OR Liver Diseases[MeSH Terms] OR Biliary Tract Diseases[MeSH Terms] OR Pancreatic Diseases[MeSH Terms] OR Pelvic Floor Disorders[MeSH Terms] OR colorectal[Title/Abstract] OR rectal[Title/Abstract] OR gastric[Title/Abstract] OR esophageal[Title/Abstract] OR oesophageal[Title/Abstract] OR \"small bowel\"[Title/Abstract] OR \"small intestine\"[Title/Abstract] OR \"pelvic floor\"[Title/Abstract] OR constipation[Title/Abstract] OR \"fecal incontinence\"[Title/Abstract] OR colonoscopy[Title/Abstract] OR gastroscopy[Title/Abstract] OR enteroscopy[Title/Abstract] OR \"endoscopic submucosal dissection\"[Title/Abstract] OR \"endoscopic mucosal resection\"[Title/Abstract])"
+    "digestive_pelvic": "(Esophageal Diseases[MeSH Terms] OR Gastrointestinal Diseases[MeSH Terms] OR Liver Diseases[MeSH Terms] OR Biliary Tract Diseases[MeSH Terms] OR Pancreatic Diseases[MeSH Terms] OR Pelvic Floor Disorders[MeSH Terms] OR colorectal[Title/Abstract] OR rectal[Title/Abstract] OR gastric[Title/Abstract] OR esophageal[Title/Abstract] OR oesophageal[Title/Abstract] OR \"small bowel\"[Title/Abstract] OR \"small intestine\"[Title/Abstract] OR \"pelvic floor\"[Title/Abstract] OR constipation[Title/Abstract] OR \"fecal incontinence\"[Title/Abstract] OR colonoscopy[Title/Abstract] OR gastroscopy[Title/Abstract] OR enteroscopy[Title/Abstract] OR \"endoscopic submucosal dissection\"[Title/Abstract] OR \"endoscopic mucosal resection\"[Title/Abstract]) AND (Guideline[Publication Type] OR \"Practice Guideline\"[Publication Type] OR \"Randomized Controlled Trial\"[Publication Type] OR Meta-Analysis[Publication Type] OR systematic[sb] OR \"practice guideline\"[Title/Abstract] OR \"clinical guideline\"[Title/Abstract] OR \"consensus statement\"[Title/Abstract] OR \"randomized controlled trial\"[Title/Abstract] OR \"randomised controlled trial\"[Title/Abstract] OR \"randomized trial\"[Title/Abstract] OR \"randomised trial\"[Title/Abstract] OR \"systematic review\"[Title/Abstract] OR meta-analysis[Title/Abstract] OR \"prospective cohort\"[Title/Abstract] OR \"population-based cohort\"[Title/Abstract] OR \"multicenter cohort\"[Title/Abstract] OR \"multicentre cohort\"[Title/Abstract] OR \"external validation\"[Title/Abstract])"
   },
   "supplementary_sources": {
     "Europe PMC": {
       "enabled": true,
       "max_pages": null,
       "queries": {
-        "digestive_pelvic": "TITLE_ABS:(colorectal OR rectal OR gastric OR esophageal OR oesophageal OR gastrointestinal OR \"small bowel\" OR \"small intestine\" OR \"pelvic floor\" OR constipation OR \"fecal incontinence\" OR Crohn OR colitis OR liver OR hepatic OR biliary OR pancreatic OR colonoscopy OR gastroscopy OR enteroscopy OR \"endoscopic submucosal dissection\" OR \"endoscopic mucosal resection\")"
+        "digestive_pelvic": "TITLE_ABS:(colorectal OR rectal OR gastric OR esophageal OR oesophageal OR gastrointestinal OR \"small bowel\" OR \"small intestine\" OR \"pelvic floor\" OR constipation OR \"fecal incontinence\" OR Crohn OR colitis OR liver OR hepatic OR biliary OR pancreatic OR colonoscopy OR gastroscopy OR enteroscopy OR \"endoscopic submucosal dissection\" OR \"endoscopic mucosal resection\") AND TITLE_ABS:(\"practice guideline\" OR \"clinical guideline\" OR \"consensus statement\" OR \"randomized trial\" OR \"randomised trial\" OR \"randomized controlled trial\" OR \"randomised controlled trial\" OR \"systematic review\" OR \"meta-analysis\" OR \"prospective cohort\" OR \"population-based cohort\" OR \"external validation\")"
       }
     },
     "arXiv": {
       "enabled": true,
       "max_pages": null,
       "queries": {
-        "digestive_ai": "(ti:colorectal OR ti:rectal OR ti:gastric OR ti:esophageal OR ti:gastrointestinal OR ti:bowel OR ti:pelvic OR ti:liver OR ti:hepatic OR ti:pancreatic) AND (all:\"artificial intelligence\" OR all:\"machine learning\" OR all:\"deep learning\" OR all:\"large language model\" OR all:\"AI agent\")"
+        "digestive_ai": "(ti:colorectal OR ti:rectal OR ti:gastric OR ti:esophageal OR ti:gastrointestinal OR ti:bowel OR ti:pelvic OR ti:liver OR ti:hepatic OR ti:pancreatic) AND (all:\"artificial intelligence\" OR all:\"machine learning\" OR all:\"deep learning\" OR all:\"large language model\" OR all:\"AI agent\") AND (abs:\"external validation\" OR abs:\"multicenter\" OR abs:\"multicentre\" OR abs:\"clinical evaluation\" OR abs:\"clinical safety\" OR abs:\"clinical cohort\" OR abs:\"patient cohort\")"
       }
     },
     "Crossref": {
@@ -34,8 +34,3 @@
     }
   }
 }
-
-
-
-
-
