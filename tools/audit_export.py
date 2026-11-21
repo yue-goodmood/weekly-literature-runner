@@ -12,10 +12,10 @@ ALLOWED = {'README.md', '.gitignore', '.github/workflows/literature.yml',
            'weekly-literature/config/topics.json'}
 ALLOWED.update('weekly-literature/src/'+name+'.py' for name in (
     'pipeline','publish','supplements','report_format','verify_publication',
-    'retune_queue','recover','public_runner','partial_publish','layout_upgrade','backfill','active_d1'))
+    'retune_queue','recover','public_runner','partial_publish','layout_upgrade','backfill','active_d1','review_corrections'))
 ALLOWED.update('weekly-literature/tests/test_'+name+'.py' for name in (
-    'pipeline','publish','report_format','retune_queue','supplements','public_runner','partial_publish','backfill','active_d1'))
-ALLOWED.update('weekly-literature/migrations/000'+str(n)+'.sql' for n in range(1,7))
+    'pipeline','publish','report_format','retune_queue','supplements','public_runner','partial_publish','backfill','active_d1','review_corrections'))
+ALLOWED.update('weekly-literature/migrations/000'+str(n)+'.sql' for n in range(1,8))
 
 
 def audit():
