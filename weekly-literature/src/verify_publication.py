@@ -12,7 +12,7 @@ def verify(store, run):
     from partial_publish import final_artifact
     state=store.sql('SELECT * FROM wl_runs WHERE run_key=?',(run,))[0]
     publications=store.sql('SELECT * FROM wl_publications WHERE run_key=? OR run_key IN '
-        '(SELECT \'popscience:\'||a.evidence_key FROM wl_analysis a JOIN wl_candidates c '
+        '(SELECT \'popscience:\'||a.evidence_key FROM wl_effective_analysis a JOIN wl_candidates c '
         'ON c.run_key=a.run_key AND c.evidence_key=a.evidence_key '
         'WHERE a.run_key=? AND c.selected=1 AND json_extract(a.payload,\'$.decision\')=\'include\' '
         'AND json_extract(a.payload,\'$.popscience_priority\')=\'high\')',(final_artifact(state),run))
@@ -59,7 +59,7 @@ def verify(store, run):
 
 def main():
     run=os.environ['RUN_KEY'];store=Store()
-    rows=store.sql('SELECT c.evidence_key,n.payload FROM wl_candidates c LEFT JOIN wl_analysis n ON n.run_key=c.run_key AND n.evidence_key=c.evidence_key WHERE c.run_key=? AND c.selected=1',(run,))
+    rows=store.sql('SELECT c.evidence_key,n.payload FROM wl_candidates c LEFT JOIN wl_effective_analysis n ON n.run_key=c.run_key AND n.evidence_key=c.evidence_key WHERE c.run_key=? AND c.selected=1',(run,))
     if not rows or any(r['payload'] is None for r in rows):raise ValueError('Incomplete analysis')
     included={r['evidence_key'] for r in rows if json.loads(r['payload'])['decision']=='include'}
     high=sum(json.loads(r['payload']).get('popscience_priority')=='high' for r in rows)
