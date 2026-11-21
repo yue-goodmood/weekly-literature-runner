@@ -97,7 +97,7 @@ def publish(store, run):
         return
     if state['status'] not in ('READY', 'PUBLISHING'):
         raise ValueError('ETL incomplete')
-    rows = store.sql('SELECT c.evidence_key,n.payload,a.payload AS article FROM wl_candidates c JOIN wl_articles a USING(evidence_key) LEFT JOIN wl_analysis n ON n.run_key=c.run_key AND n.evidence_key=c.evidence_key WHERE c.run_key=? AND c.selected=1 ORDER BY c.score DESC,c.evidence_key', (run,))
+    rows = store.sql('SELECT c.evidence_key,n.payload,n.correction_source,n.correction_reason,a.payload AS article FROM wl_candidates c JOIN wl_articles a USING(evidence_key) LEFT JOIN wl_effective_analysis n ON n.run_key=c.run_key AND n.evidence_key=c.evidence_key WHERE c.run_key=? AND c.selected=1 ORDER BY c.score DESC,c.evidence_key', (run,))
     selected = store.sql('SELECT count(*) n FROM wl_candidates WHERE run_key=? AND selected=1', (run,))[0]['n']
     if len(rows) != selected:
         raise ValueError('Candidate metadata missing; refuse truncated publication')
@@ -117,10 +117,23 @@ def publish(store, run):
             'AND NOT EXISTS (SELECT 1 FROM wl_candidates old WHERE old.evidence_key=c.evidence_key '
             'AND old.run_key<c.run_key AND old.selected=1) LIMIT 1', (run,)):
         raise ValueError('Unqueued eligible candidates; refuse final publication')
-    store.sql("UPDATE wl_runs SET status='PUBLISHING' WHERE run_key=? AND status='READY'", (run,))
+    amendments = [row for row in rows if row['correction_source']]
+    store.sql("UPDATE wl_runs SET status='PUBLISHING' WHERE run_key=? AND status='READY' AND "
+              "(SELECT count(*) FROM wl_review_corrections WHERE run_key=?)=?", (run,run,len(amendments)))
+    if store.sql('SELECT status FROM wl_runs WHERE run_key=?',(run,))[0]['status'] != 'PUBLISHING':
+        raise ValueError('Review changed before publication freeze')
     page = provision_page(store, artifact)
     recovery = store.sql('SELECT payload FROM wl_checkpoints WHERE run_key=? AND unit=?',
                          (run, 'recovery:unlimited-v1:publication-base'))
+    correction_blocks = []
+    if amendments:
+        correction_blocks.append(_block('heading_1','来源复核与判断更正'))
+        for row in amendments:
+            value = json.loads(row['payload'])
+            decision = '纳入' if value['decision']=='include' else '排除'
+            correction_blocks.extend([
+                _block('paragraph',decision+'｜'+value['summary']),
+                _block('paragraph',row['correction_reason']+'\n原始来源 '+row['correction_source'])])
     if recovery and artifact==run:
         base = json.loads(recovery[0]['payload'])
         prior = set(base['evidence_keys'])
@@ -129,10 +142,10 @@ def publish(store, run):
         blocks.insert(0, _block('heading_1', '回溯补充：解除100条限制后的完整候选复核'))
         blocks.insert(1, _block('paragraph', '保留上方原始归档与审计；以下补入先前被顺延的文献。最新总数与覆盖状态以数据库属性及本次审计为准。'))
         included = sum(json.loads(row['payload'])['decision']=='include' for row in rows)
-        publish_report_blocks(store, run, page, blocks, os.environ['NOTION_TOKEN'], prefix=base['blocks'])
+        publish_report_blocks(store, run, page, blocks + correction_blocks, os.environ['NOTION_TOKEN'], prefix=base['blocks'])
     else:
         blocks, included = (final_index(state, rows, partial_entries) if partial_entries else build_report(state, rows))
-        publish_report_blocks(store, artifact, page, blocks, os.environ['NOTION_TOKEN'])
+        publish_report_blocks(store, artifact, page, blocks + correction_blocks, os.environ['NOTION_TOKEN'])
     failures=[]
     for row in rows:
         value=json.loads(row['payload'])
